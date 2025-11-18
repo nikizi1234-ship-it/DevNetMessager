@@ -271,4 +271,31 @@ function displayMessage(messageData, isOwn) {
     messageDiv.className = `message ${isOwn ? 'own' : 'other'}`;
     
     const time = new Date(messageData.timestamp).toLocaleTimeString();
-   
+    messageDiv.innerHTML = `
+        <div class="message-content">${escapeHtml(messageData.content)}</div>
+        <small class="message-time">${time}</small>
+    `;
+    
+    messagesDiv.appendChild(messageDiv);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+// Утилиты
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function showNotification(message, type) {
+    // Простая реализация уведомлений
+    console.log(`${type}: ${message}`);
+    // Можно добавить красивые toast уведомления
+}
+
+// Отправка по Enter
+document.getElementById('messageInput').addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') {
+        sendMessage();
+    }
+});
