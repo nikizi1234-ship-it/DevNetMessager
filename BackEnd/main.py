@@ -91,30 +91,6 @@ def create_initial_users():
 # Создаем пользователей при запуске
 create_initial_users()
 
-# Middleware для проверки аутентификации
-@app.middleware("http")
-async def auth_middleware(request: Request, call_next):
-    # Пропускаем статические файлы и API endpoints которые не требуют аутентификации
-    if request.url.path.startswith("/static") or request.url.path in ["/", "/api/login", "/api/register", "/health", "/api/test_register"]:
-        response = await call_next(request)
-        return response
-    
-    # Для HTML страниц проверяем токен в cookies
-    if request.url.path in ["/chat", "/dashboard"]:
-        token = request.cookies.get("access_token")
-        if not token:
-            return RedirectResponse(url="/")
-        
-        try:
-            payload = verify_token(token)
-            if payload is None:
-                return RedirectResponse(url="/")
-        except Exception:
-            return RedirectResponse(url="/")
-    
-    response = await call_next(request)
-    return response
-
 # Регистрация пользователя
 @app.post("/api/register")
 async def register(
@@ -272,16 +248,36 @@ async def logout(request: Request, db: Session = Depends(get_db)):
 
 # Получение информации о текущем пользователе
 @app.get("/api/me")
-async def get_current_user_info(current_user: User = Depends(get_current_user)):
-    return {
-        "id": current_user.id,
-        "username": current_user.username,
-        "email": current_user.email,
-        "display_name": current_user.display_name,
-        "is_online": current_user.is_online or False,
-        "last_login": current_user.last_login.isoformat() if current_user.last_login else None,
-        "created_at": current_user.created_at.isoformat() if current_user.created_at else None
-    }
+async def get_current_user_info(request: Request, db: Session = Depends(get_db)):
+    try:
+        token = request.cookies.get("access_token")
+        if not token:
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Недействительный токен")
+        
+        user_id = payload.get("user_id")
+        user = db.query(User).filter(User.id == user_id).first()
+        
+        if not user:
+            raise HTTPException(status_code=401, detail="Пользователь не найден")
+        
+        return {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "display_name": user.display_name,
+            "is_online": user.is_online or False,
+            "last_login": user.last_login.isoformat() if user.last_login else None,
+            "created_at": user.created_at.isoformat() if user.created_at else None
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
 
 # Простой тест регистрации через GET
 @app.get("/api/test_register")
@@ -323,44 +319,74 @@ async def test_register(db: Session = Depends(get_db)):
 
 # Получение всех пользователей (только для аутентифицированных)
 @app.get("/api/users")
-async def get_all_users(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    users = db.query(User).filter(User.id != current_user.id).all()
-    return {
-        "total_users": len(users),
-        "current_user_id": current_user.id,
-        "users": [
-            {
-                "id": user.id,
-                "username": user.username,
-                "email": user.email,
-                "display_name": user.display_name,
-                "is_online": user.is_online or False,
-                "last_login": user.last_login.isoformat() if user.last_login else None,
-                "created_at": user.created_at.isoformat() if user.created_at else None
-            }
-            for user in users
-        ]
-    }
+async def get_all_users(request: Request, db: Session = Depends(get_db)):
+    try:
+        token = request.cookies.get("access_token")
+        if not token:
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Недействительный токен")
+        
+        current_user_id = payload.get("user_id")
+        users = db.query(User).filter(User.id != current_user_id).all()
+        
+        return {
+            "total_users": len(users),
+            "current_user_id": current_user_id,
+            "users": [
+                {
+                    "id": user.id,
+                    "username": user.username,
+                    "email": user.email,
+                    "display_name": user.display_name,
+                    "is_online": user.is_online or False,
+                    "last_login": user.last_login.isoformat() if user.last_login else None,
+                    "created_at": user.created_at.isoformat() if user.created_at else None
+                }
+                for user in users
+            ]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
 
 # Получение информации о конкретном пользователе
 @app.get("/api/users/{user_id}")
-async def get_user(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        return JSONResponse(
-            status_code=404,
-            content={"detail": "Пользователь не найден"}
-        )
-    
-    return {
-        "id": user.id,
-        "username": user.username,
-        "email": user.email,
-        "display_name": user.display_name,
-        "is_online": user.is_online or False,
-        "last_login": user.last_login.isoformat() if user.last_login else None,
-        "created_at": user.created_at.isoformat() if user.created_at else None
-    }
+async def get_user(user_id: int, request: Request, db: Session = Depends(get_db)):
+    try:
+        token = request.cookies.get("access_token")
+        if not token:
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Недействительный токен")
+        
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Пользователь не найден"}
+            )
+        
+        return {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "display_name": user.display_name,
+            "is_online": user.is_online or False,
+            "last_login": user.last_login.isoformat() if user.last_login else None,
+            "created_at": user.created_at.isoformat() if user.created_at else None
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
 
 # WebSocket endpoint с аутентификацией
 @app.websocket("/ws")
@@ -506,11 +532,19 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/api/messages/{other_user_id}")
 async def get_message_history(
     other_user_id: int, 
-    db: Session = Depends(get_db), 
-    current_user: User = Depends(get_current_user)
+    request: Request,
+    db: Session = Depends(get_db)
 ):
     try:
-        user_id = current_user.id
+        token = request.cookies.get("access_token")
+        if not token:
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Недействительный токен")
+        
+        user_id = payload.get("user_id")
         
         # Более строгий фильтр - только сообщения между двумя конкретными пользователями
         messages = db.query(Message).filter(
@@ -537,6 +571,8 @@ async def get_message_history(
             for msg in messages
         ]
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"❌ Ошибка загрузки сообщений: {e}")
         return JSONResponse(
@@ -546,9 +582,17 @@ async def get_message_history(
 
 # API для получения списка чатов пользователя
 @app.get("/api/chats")
-async def get_user_chats(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def get_user_chats(request: Request, db: Session = Depends(get_db)):
     try:
-        user_id = current_user.id
+        token = request.cookies.get("access_token")
+        if not token:
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Недействительный токен")
+        
+        user_id = payload.get("user_id")
         
         # Находим всех пользователей, с которыми есть переписка
         # Сообщения, где пользователь является отправителем
@@ -605,6 +649,8 @@ async def get_user_chats(db: Session = Depends(get_db), current_user: User = Dep
             "chats": sorted(chats, key=lambda x: x["last_message"]["timestamp"] if x["last_message"] and x["last_message"]["timestamp"] else "", reverse=True)
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"❌ Ошибка получения чатов: {e}")
         return JSONResponse(
@@ -616,11 +662,19 @@ async def get_user_chats(db: Session = Depends(get_db), current_user: User = Dep
 @app.delete("/api/messages/for-me/{other_user_id}")
 async def delete_chat_history_for_me(
     other_user_id: int, 
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    request: Request,
+    db: Session = Depends(get_db)
 ):
     try:
-        user_id = current_user.id
+        token = request.cookies.get("access_token")
+        if not token:
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Недействительный токен")
+        
+        user_id = payload.get("user_id")
         print(f"🗑️ Удаление истории чата для пользователя {user_id} с {other_user_id}")
         
         # Удаляем только сообщения, где текущий пользователь является отправителем
@@ -639,6 +693,8 @@ async def delete_chat_history_for_me(
             "message": f"История чата удалена для вас ({deleted_count} сообщений)"
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         print(f"❌ Ошибка удаления чата: {e}")
@@ -651,11 +707,19 @@ async def delete_chat_history_for_me(
 @app.delete("/api/messages/for-all/{other_user_id}")
 async def delete_chat_history_for_all(
     other_user_id: int, 
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    request: Request,
+    db: Session = Depends(get_db)
 ):
     try:
-        user_id = current_user.id
+        token = request.cookies.get("access_token")
+        if not token:
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Недействительный токен")
+        
+        user_id = payload.get("user_id")
         print(f"🗑️ Удаление истории чата для всех между {user_id} и {other_user_id}")
         
         # Удаляем ВСЕ сообщения между двумя конкретными пользователями
@@ -687,6 +751,8 @@ async def delete_chat_history_for_all(
             "message": f"История чата удалена для всех участников ({deleted_count} сообщений)"
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         print(f"❌ Ошибка удаления чата: {e}")
@@ -699,11 +765,19 @@ async def delete_chat_history_for_all(
 @app.delete("/api/message/{message_id}")
 async def delete_message(
     message_id: int, 
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    request: Request,
+    db: Session = Depends(get_db)
 ):
     try:
-        user_id = current_user.id
+        token = request.cookies.get("access_token")
+        if not token:
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Недействительный токен")
+        
+        user_id = payload.get("user_id")
         message_id = int(message_id)
         message = db.query(Message).filter(Message.id == message_id).first()
         
@@ -733,6 +807,8 @@ async def delete_message(
             status_code=400,
             content={"detail": "Неверный ID сообщения"}
         )
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         return JSONResponse(
