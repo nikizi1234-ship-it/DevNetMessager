@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import uvicorn 
 import os
-from typing import Optional
 
 from websocket_manager import manager
 from database import engine, SessionLocal, get_db
@@ -368,6 +367,7 @@ async def get_user(user_id: int, db: Session = Depends(get_db), current_user: Us
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     
+    user_id = None
     try:
         # Получаем токен при подключении
         data = await websocket.receive_text()
@@ -482,11 +482,12 @@ async def websocket_endpoint(websocket: WebSocket):
         # Обновляем статус пользователя как офлайн при отключении
         db = SessionLocal()
         try:
-            user = db.query(User).filter(User.id == user_id).first()
-            if user:
-                user.is_online = False
-                db.commit()
-                print(f"✅ Пользователь {user.username} отключен (ID: {user_id})")
+            if user_id:
+                user = db.query(User).filter(User.id == user_id).first()
+                if user:
+                    user.is_online = False
+                    db.commit()
+                    print(f"✅ Пользователь {user.username} отключен (ID: {user_id})")
         except Exception as e:
             print(f"❌ Ошибка обновления статуса: {e}")
         finally:
