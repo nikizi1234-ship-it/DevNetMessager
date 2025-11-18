@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DevNet Messenger - Социальная сеть для разработчиков</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        :root {
+            --primary: #10a37f;
+            --primary-dark: #0d8c6c;
+            --primary-light: #12b592;
+            --bg-dark: #0f0f0f;
+            --bg-darker: #0a0a0a;
+            --bg-light: #1a1a1a;
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0a0;
+            --text-muted: #666666;
+            --border: rgba(255,255,255,0.1);
+            --gradient: linear-gradient(135deg, var(--primary) 0%, #1e90ff 100%);
+            --glow: 0 0 30px rgba(16, 163, 127, 0.4);
+        }
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            line-height: 1.6;
+            color: var(--text-primary);
+            background: var(--bg-darker);
+            min-height: 100vh;
+            position: relative;
+            overflow-x: hidden;
+        }
+        
+        .gradient-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(circle at 20% 80%, rgba(16, 163, 127, 0.15) 0%, transparent 50%),
+                radial-gradient(circle at 80% 20%, rgba(30, 144, 255, 0.1) 0%, transparent 50%),
+                radial-gradient(circle at 40% 40%, rgba(16, 163, 127, 0.08) 0%, transparent 50%);
+            z-index: -2;
+            animation: gradientShift 8s ease-in-out infinite;
+        }
+        
+        @keyframes gradientShift {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.8; }
+        }
+        
+        .header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            background: rgba(15, 15, 15, 0.95);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            z-index: 1000;
+            padding: 1rem 0;
+        }
+        
+        .nav {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .logo {
+            font-size: 1.5rem;
+            font-weight: 700;
+            background: var(--gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .nav-links {
+            display: flex;
+            list-style: none;
+            gap: 2rem;
+        }
+        
+        .nav-links a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            position: relative;
+            padding: 0.5rem 0;
+        }
+        
+        .nav-links a::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 0;
+            height: 2px;
+            background: var(--gradient);
+            transition: width 0.3s ease;
+        }
+        
+        .nav-links a:hover {
+            color: var(--text-primary);
+        }
+        
+        .nav-links a:hover::after {
+            width: 100%;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+        
+        .section {
+            padding: 120px 0;
+            position: relative;
+        }
+        
+        .home {
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            position: relative;
+        }
+        
+        .home::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 200px;
+            height: 200px;
+            background: var(--gradient);
+            border-radius: 50%;
+            filter: blur(80px);
+            opacity: 0.3;
+            animation: pulse 4s ease-in-out infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.3; }
+            50% { transform: translate(-50%, -50%) scale(1.2); opacity: 0.5; }
+        }
+        
+        .home h1 {
+            font-size: 4rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            background: var(--gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation: fadeInUp 1s ease-out;
+        }
+        
+        .home p {
+            font-size: 1.3rem;
+            font-weight: 300;
+            color: var(--text-secondary);
+            animation: fadeInUp 1s ease-out 0.2s both;
+        }
+        
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* СТИЛИ ДЛЯ ФОРМ РЕГИСТРАЦИИ И ВХОДА */
+        .auth-section {
+            background: linear-gradient(180deg, var(--bg-darker) 0%, rgba(16, 163, 127, 0.1) 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 100px 0;
+        }
+        
+        .auth-container {
+            background: var(--bg-light);
+            border-radius: 25px;
+            border: 1px solid var(--border);
+            padding: 3rem;
+            max-width: 500px;
+            width: 100%;
+            position: relative;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+        
+        .auth-container::before {
+            content: '';
+            position: absolute;
+            top: -2px;
+            left: -2px;
+            right: -2px;
+            bottom: -2px;
+            background: var(--gradient);
+            border-radius: 27px;
+            z-index: -1;
+            opacity: 0;
+            transition: opacity 0.4s ease;
+        }
+        
+        .auth-container:hover::before {
+            opacity: 0.3;
+            animation: borderGlow 2s ease-in-out infinite;
+        }
+        
+        @keyframes borderGlow {
+            0%, 100% { opacity: 0.2; }
+            50% { opacity: 0.4; }
+        }
+        
+        .auth-tabs {
+            display: flex;
+            background: rgba(255,255,255,0.05);
+            border-radius: 15px;
+            padding: 5px;
+            margin-bottom: 2.5rem;
+            border: 1px solid var(--border);
+        }
+        
+        .auth-tab {
+            flex: 1;
+            padding: 1rem;
+            text-align: center;
+            cursor: pointer;
+            border: none;
+            background: none;
+            color: var(--text-secondary);
+            font-weight: 500;
+            border-radius: 12px;
+            transition: all 0.3s ease;
+            font-size: 1rem;
+        }
+        
+        .auth-tab.active {
+            background: var(--gradient);
+            color: white;
+            box-shadow: 0 4px 15px rgba(16, 163, 127, 0.3);
+        }
+        
+        .auth-form {
+            display: none;
+        }
+        
+        .auth-form.active {
+            display: block;
+            animation: fadeInUp 0.5s ease-out;
+        }
+        
+        .auth-form h2 {
+            text-align: center;
+            margin-bottom: 0.5rem;
+            background: var(--gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            font-size: 2rem;
+        }
+        
+        .auth-subtitle {
+            text-align: center;
+            color: var(--text-secondary);
+            margin-bottom: 2rem;
+            font-size: 1rem;
+        }
+        
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+        
+        .form-group input {
+            width: 100%;
+            padding: 1rem;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: var(--text-primary);
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+        
+        .form-group input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.2);
+        }
+        
+        .form-group input.error {
+            border-color: #ff4757;
+            box-shadow: 0 0 0 2px rgba(255, 71, 87, 0.2);
+        }
+        
+        .password-hint {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            margin-top: 0.3rem;
+        }
+        
+        .error-message {
+            color: #ff4757;
+            font-size: 0.8rem;
+            margin-top: 0.3rem;
+            display: none;
+        }
+        
+        .auth-button {
+            width: 100%;
+            padding: 1rem;
+            background: var(--gradient);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 1rem;
+        }
+        
+        .auth-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(16, 163, 127, 0.4);
+        }
+        
+        .auth-button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .success-message {
+            background: rgba(39, 174, 96, 0.1);
+            border: 1px solid rgba(39, 174, 96, 0.3);
+            color: #27ae60;
+            padding: 1rem;
+            border-radius: 12px;
+            text-align: center;
+            margin-top: 1rem;
+            display: none;
+        }
+        
+        .demo-users {
+            margin-top: 2rem;
+            padding: 1.5rem;
+            background: rgba(255,255,255,0.03);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+        }
+        
+        .demo-users h3 {
+            margin-bottom: 1rem;
+            color: var(--text-primary);
+            font-size: 1.1rem;
+        }
+        
+        .demo-user-list {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.8rem;
+        }
+        
+        .demo-user {
+            padding: 0.8rem;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-align: center;
+        }
+        
+        .demo-user:hover {
+            background: rgba(16, 163, 127, 0.1);
+            border-color: var(--primary);
+            transform: translateY(-2px);
+        }
+        
+        .demo-username {
+            font-weight: 600;
+            margin-bottom: 0.3rem;
+        }
+        
+        .demo-password {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+        
+        .demo-links {
+            display: flex;
+            gap: 1rem;
+            margin-top: 2rem;
+            flex-wrap: wrap;
+        }
+        
+        .demo-link {
+            flex: 1;
+            padding: 0.8rem;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            color: var(--text-primary);
+            text-decoration: none;
+            text-align: center;
+            transition: all 0.3s ease;
+            font-size: 0.9rem;
+            min-width: 120px;
+        }
+        
+        .demo-link:hover {
+            background: rgba(16, 163, 127, 0.2);
+            border-color: var(--primary);
+            transform: translateY(-2px);
+        }
+        
+        /* АДАПТИВНОСТЬ */
+        @media (max-width: 768px) {
+            .auth-container {
+                margin: 1rem;
+                padding: 2rem;
+            }
+            
+            .home h1 {
+                font-size: 2.5rem;
+            }
+            
+            .home p {
+                font-size: 1.1rem;
+            }
+            
+            .demo-user-list {
+                grid-template-columns: 1fr;
+            }
+            
+            .demo-links {
+                flex-direction: column;
+            }
+            
+            .demo-link {
+                min-width: auto;
+            }
+        }
+        
+        @media (max-width: 480px) {
+            .auth-container {
+                padding: 1.5rem;
+            }
+            
+            .auth-form h2 {
+                font-size: 1.5rem;
+            }
+            
+            .home h1 {
+                font-size: 2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="gradient-bg"></div>
+    
+    <header class="header">
+        <nav class="nav">
+            <div class="logo">DevNet Messenger</div>
+            <ul class="nav-links">
+                <li><a onclick="scrollToSection('home')">Главная</a></li>
+                <li><a onclick="scrollToSection('auth')">Войти</a></li>
+                <li><a href="/chat">Чат</a></li>
+                <li><a href="/docs">API</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <section class="home" id="home">
+        <div class="container">
+            <h1>DevNet Messenger</h1>
+            <p>Real-time мессенджер для разработчиков</p>
+        </div>
+    </section>
+
+    <section class="auth-section" id="auth">
+        <div class="container">
+            <div class="auth-container">
+                <div class="auth-tabs">
+                    <button class="auth-tab active" onclick="showAuthForm('register')">Регистрация</button>
+                    <button class="auth-tab" onclick="showAuthForm('login')">Вход</button>
+                </div>
+                
+                <!-- Форма регистрации -->
+                <form id="registerForm" class="auth-form active">
+                    <h2>Создать аккаунт</h2>
+                    <p class="auth-subtitle">Присоединяйтесь к сообществу разработчиков</p>
+                    
+                    <div class="form-group">
+                        <label>Имя пользователя</label>
+                        <input type="text" name="username" placeholder="username" required 
+                               minlength="3" maxlength="50">
+                        <div class="error-message" id="usernameError"></div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Email</label>
+                        <input type="email" name="email" placeholder="user@example.com" required>
+                        <div class="error-message" id="emailError"></div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Пароль</label>
+                        <input type="password" name="password" placeholder="Минимум 6 символов" required
+                               minlength="6" maxlength="20">
+                        <div class="password-hint">Пароль должен быть от 6 до 20 символов</div>
+                        <div class="error-message" id="passwordError"></div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Отображаемое имя (опционально)</label>
+                        <input type="text" name="display_name" placeholder="Ваше имя" maxlength="100">
+                    </div>
+                    
+                    <button type="submit" class="auth-button" id="registerBtn">
+                        Создать аккаунт
+                    </button>
+                    
+                    <div class="success-message" id="registerSuccess"></div>
+                </form>
+
+                <!-- Форма входа -->
+                <form id="loginForm" class="auth-form">
+                    <h2>Войти в аккаунт</h2>
+                    <p class="auth-subtitle">Добро пожаловать обратно!</p>
+                    
+                    <div class="form-group">
+                        <label>Имя пользователя</label>
+                        <input type="text" name="username" placeholder="username" required>
+                        <div class="error-message" id="loginUsernameError"></div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Пароль</label>
+                        <input type="password" name="password" placeholder="Ваш пароль" required>
+                        <div class="error-message" id="loginPasswordError"></div>
+                    </div>
+                    
+                    <button type="submit" class="auth-button" id="loginBtn">
+                        Войти
+                    </button>
+                    
+                    <div class="success-message" id="loginSuccess"></div>
+                </form>
+
+                <!-- Демо пользователи -->
+                <div class="demo-users">
+                    <h3>👥 Тестовые аккаунты (для быстрого входа):</h3>
+                    <div class="demo-user-list">
+                        <div class="demo-user" onclick="fillDemoCredentials('user1', 'password123')">
+                            <div class="demo-username">user1</div>
+                            <div class="demo-password">password123</div>
+                        </div>
+                        <div class="demo-user" onclick="fillDemoCredentials('user2', 'password123')">
+                            <div class="demo-username">user2</div>
+                            <div class="demo-password">password123</div>
+                        </div>
+                        <div class="demo-user" onclick="fillDemoCredentials('user3', 'password123')">
+                            <div class="demo-username">user3</div>
+                            <div class="demo-password">password123</div>
+                        </div>
+                        <div class="demo-user" onclick="fillDemoCredentials('admin', 'admin123')">
+                            <div class="demo-username">admin</div>
+                            <div class="demo-password">admin123</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="demo-links">
+                    <a href="/chat" class="demo-link">Перейти в чат</a>
+                    <a href="/api/users" class="demo-link">Все пользователи</a>
+                    <a href="/docs" class="demo-link">API Docs</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <script>
+        // Переключение между формами
+        function showAuthForm(formName) {
+            // Скрыть все формы
+            document.querySelectorAll('.auth-form').forEach(form => {
+                form.classList.remove('active');
+            });
+            
+            // Убрать активный класс со всех вкладок
+            document.querySelectorAll('.auth-tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Показать выбранную форму
+            document.getElementById(formName + 'Form').classList.add('active');
+            
+            // Активировать выбранную вкладку
+            event.target.classList.add('active');
+        }
+
+        // Заполнение демо credentials
+        function fillDemoCredentials(username, password) {
+            document.querySelector('#loginForm [name="username"]').value = username;
+            document.querySelector('#loginForm [name="password"]').value = password;
+            showAuthForm('login');
+        }
+
+        // Валидация пароля на клиенте
+        function validatePassword(password) {
+            if (password.length < 6) {
+                return "Пароль должен содержать минимум 6 символов";
+            }
+            if (password.length > 20) {
+                return "Пароль слишком длинный (максимум 20 символов)";
+            }
+            return null;
+        }
+
+        // Обработка формы регистрации
+        document.getElementById('registerForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(this);
+            const password = formData.get('password');
+            const resultDiv = document.getElementById('registerSuccess');
+            const errorDivs = ['usernameError', 'emailError', 'passwordError'];
+            const registerBtn = document.getElementById('registerBtn');
+            
+            // Скрыть ошибки и убрать красные рамки
+            errorDivs.forEach(id => {
+                const errorElement = document.getElementById(id);
+                errorElement.style.display = 'none';
+                const inputName = id.replace('Error', '');
+                const input = document.querySelector(`[name="${inputName}"]`);
+                if (input) input.classList.remove('error');
+            });
+            resultDiv.style.display = 'none';
+            
+            // Валидация пароля на клиенте
+            const passwordError = validatePassword(password);
+            if (passwordError) {
+                document.getElementById('passwordError').textContent = passwordError;
+                document.getElementById('passwordError').style.display = 'block';
+                document.querySelector('[name="password"]').classList.add('error');
+                return;
+            }
+            
+            // Блокируем кнопку
+            registerBtn.disabled = true;
+            registerBtn.textContent = 'Регистрация...';
+            
+            try {
+                const response = await fetch('/api/register', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    resultDiv.innerHTML = `✅ Регистрация успешна! Добро пожаловать, ${result.username}!<br>Перенаправление в чат...`;
+                    resultDiv.style.display = 'block';
+                    
+                    // Сохраняем токен в localStorage
+                    localStorage.setItem('token', result.access_token);
+                    localStorage.setItem('user_id', result.user_id);
+                    localStorage.setItem('username', result.username);
+                    
+                    // Перенаправляем в чат через 2 секунды
+                    setTimeout(() => {
+                        window.location.href = `/chat?user_id=${result.user_id}`;
+                    }, 2000);
+                } else {
+                    // Показываем ошибки
+                    if (result.detail) {
+                        if (result.detail.includes('email')) {
+                            document.getElementById('emailError').textContent = result.detail;
+                            document.getElementById('emailError').style.display = 'block';
+                            document.querySelector('[name="email"]').classList.add('error');
+                        } else if (result.detail.includes('парол')) {
+                            document.getElementById('passwordError').textContent = result.detail;
+                            document.getElementById('passwordError').style.display = 'block';
+                            document.querySelector('[name="password"]').classList.add('error');
+                        } else {
+                            document.getElementById('usernameError').textContent = result.detail;
+                            document.getElementById('usernameError').style.display = 'block';
+                            document.querySelector('[name="username"]').classList.add('error');
+                        }
+                    }
+                }
+            } catch (error) {
+                document.getElementById('usernameError').textContent = 'Ошибка сети: ' + error;
+                document.getElementById('usernameError').style.display = 'block';
+                document.querySelector('[name="username"]').classList.add('error');
+            } finally {
+                // Разблокируем кнопку
+                registerBtn.disabled = false;
+                registerBtn.textContent = 'Создать аккаунт';
+            }
+        });
+
+        // Обработка формы входа
+        document.getElementById('loginForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(this);
+            const resultDiv = document.getElementById('loginSuccess');
+            const errorDivs = ['loginUsernameError', 'loginPasswordError'];
+            const loginBtn = document.getElementById('loginBtn');
+            
+            // Скрыть ошибки
+            errorDivs.forEach(id => {
+                const errorElement = document.getElementById(id);
+                errorElement.style.display = 'none';
+                const inputName = id.replace('login', '').replace('Error', '');
+                const input = document.querySelector(`[name="${inputName}"]`);
+                if (input) input.classList.remove('error');
+            });
+            resultDiv.style.display = 'none';
+            
+            // Блокируем кнопку
+            loginBtn.disabled = true;
+            loginBtn.textContent = 'Вход...';
+            
+            try {
+                const response = await fetch('/api/login', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    resultDiv.innerHTML = `✅ Вход выполнен! Добро пожаловать, ${result.username}!<br>Перенаправление в чат...`;
+                    resultDiv.style.display = 'block';
+                    this.reset();
+                    
+                    // Сохраняем токен в localStorage
+                    localStorage.setItem('token', result.access_token);
+                    localStorage.setItem('user_id', result.user_id);
+                    localStorage.setItem('username', result.username);
+                    
+                    // Перенаправляем в чат через 2 секунды
+                    setTimeout(() => {
+                        window.location.href = `/chat?user_id=${result.user_id}`;
+                    }, 2000);
+                } else {
+                    document.getElementById('loginUsernameError').textContent = result.detail || 'Ошибка входа';
+                    document.getElementById('loginUsernameError').style.display = 'block';
+                    document.querySelector('[name="username"]').classList.add('error');
+                }
+            } catch (error) {
+                document.getElementById('loginUsernameError').textContent = 'Ошибка сети: ' + error;
+                document.getElementById('loginUsernameError').style.display = 'block';
+                document.querySelector('[name="username"]').classList.add('error');
+            } finally {
+                // Разблокируем кнопку
+                loginBtn.disabled = false;
+                loginBtn.textContent = 'Войти';
+            }
+        });
+
+        // Прокрутка к секции
+        function scrollToSection(sectionId) {
+            document.getElementById(sectionId).scrollIntoView({
+                behavior: 'smooth'
+            });
+        }
+
+        // Проверяем, есть ли уже токен
+        window.addEventListener('load', function() {
+            const token = localStorage.getItem('token');
+            if (token) {
+                document.getElementById('registerSuccess').innerHTML = 
+                    '✅ Вы уже авторизованы! <a href="/chat" style="color: var(--primary); text-decoration: none;">Перейти в чат</a>';
+                document.getElementById('registerSuccess').style.display = 'block';
+            }
+        });
+    </script>
+</body>
+</html>

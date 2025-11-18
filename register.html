@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>DevNet - Регистрация</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 400px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+        }
+        input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            width: 100%;
+            padding: 10px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+    </style>
+</head>
+<body>
+    <h1>Регистрация в DevNet</h1>
+    
+    <form id="registerForm">
+        <div class="form-group">
+            <label>Имя пользователя:</label>
+            <input type="text" name="username" value="testuser" required>
+        </div>
+        
+        <div class="form-group">
+            <label>Email:</label>
+            <input type="email" name="email" value="test@example.com" required>
+        </div>
+        
+        <div class="form-group">
+            <label>Пароль:</label>
+            <input type="password" name="password" value="password123" required>
+        </div>
+        
+        <div class="form-group">
+            <label>Отображаемое имя:</label>
+            <input type="text" name="display_name" value="Test User">
+        </div>
+        
+        <button type="submit">Зарегистрироваться</button>
+    </form>
+
+    <div id="result"></div>
+
+    <script>
+        document.getElementById('registerForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(this);
+            const resultDiv = document.getElementById('result');
+            
+            try {
+                const response = await fetch('/api/register', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    resultDiv.innerHTML = `
+                        <div class="result success">
+                            <h3>✅ Успешная регистрация!</h3>
+                            <pre>${JSON.stringify(result, null, 2)}</pre>
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <div class="result error">
+                            <h3>❌ Ошибка регистрации</h3>
+                            <p>${result.detail || 'Неизвестная ошибка'}</p>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <div class="result error">
+                        <h3>❌ Ошибка сети</h3>
+                        <p>${error}</p>
+                    </div>
+                `;
+            }
+        });
+    </script>
+</body>
+</html>
