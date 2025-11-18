@@ -1,7 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 import json
@@ -52,7 +52,7 @@ def create_initial_users():
                     is_online=False
                 ),
                 User(
-                    username="user2",
+                    username="user2", 
                     email="user2@example.com",
                     display_name="User Two", 
                     password_hash=get_password_hash("password123"),
@@ -63,13 +63,6 @@ def create_initial_users():
                     email="user3@example.com",
                     display_name="User Three",
                     password_hash=get_password_hash("password123"),
-                    is_online=False
-                ),
-                User(
-                    username="admin",
-                    email="admin@example.com",
-                    display_name="Administrator",
-                    password_hash=get_password_hash("admin123"),
                     is_online=False
                 )
             ]
@@ -317,7 +310,7 @@ async def test_register(db: Session = Depends(get_db)):
     except Exception as e:
         return {"error": str(e)}
 
-# Получение всех пользователей (только для аутентифицированных)
+# Получение всех пользователей
 @app.get("/api/users")
 async def get_all_users(request: Request, db: Session = Depends(get_db)):
     try:
@@ -388,7 +381,7 @@ async def get_user(user_id: int, request: Request, db: Session = Depends(get_db)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
 
-# WebSocket endpoint (сохраняем простую версию с user_id в URL)
+# WebSocket endpoint
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: int):
     await manager.connect(websocket, user_id)
@@ -481,32 +474,13 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
         
         manager.disconnect(user_id)
 
-# API для получения истории сообщений между двумя конкретными пользователями
-@app.get("/api/messages/{other_user_id}")
-async def get_message_history(
-    other_user_id: int, 
-    request: Request,
-    db: Session = Depends(get_db)
-):
+# API для получения истории сообщений
+@app.get("/api/messages/{user_id}/{other_user_id}")
+async def get_message_history(user_id: int, other_user_id: int, db: Session = Depends(get_db)):
     try:
-        token = request.cookies.get("access_token")
-        if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
-        
-        # Более строгий фильтр - только сообщения между двумя конкретными пользователями
         messages = db.query(Message).filter(
-            and_(
-                # Сообщения от user_id к other_user_id
-                ((Message.from_user_id == user_id) & (Message.to_user_id == other_user_id)) |
-                # ИЛИ сообщения от other_user_id к user_id
-                ((Message.from_user_id == other_user_id) & (Message.to_user_id == user_id))
-            )
+            ((Message.from_user_id == user_id) & (Message.to_user_id == other_user_id)) |
+            ((Message.from_user_id == other_user_id) & (Message.to_user_id == user_id))
         ).order_by(Message.created_at.asc()).all()
         
         print(f"📨 Загружено {len(messages)} сообщений между пользователями {user_id} и {other_user_id}")
@@ -524,8 +498,6 @@ async def get_message_history(
             for msg in messages
         ]
         
-    except HTTPException:
-        raise
     except Exception as e:
         print(f"❌ Ошибка загрузки сообщений: {e}")
         return JSONResponse(
@@ -533,101 +505,14 @@ async def get_message_history(
             content={"detail": f"Ошибка загрузки истории сообщений: {str(e)}"}
         )
 
-# API для получения списка чатов пользователя
-@app.get("/api/chats")
-async def get_user_chats(request: Request, db: Session = Depends(get_db)):
-    try:
-        token = request.cookies.get("access_token")
-        if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
-        
-        # Находим всех пользователей, с которыми есть переписка
-        # Сообщения, где пользователь является отправителем
-        sent_messages = db.query(Message.to_user_id).filter(
-            Message.from_user_id == user_id
-        ).distinct()
-        
-        # Сообщения, где пользователь является получателем  
-        received_messages = db.query(Message.from_user_id).filter(
-            Message.to_user_id == user_id
-        ).distinct()
-        
-        # Объединяем и находим уникальные ID пользователей
-        chat_user_ids = set()
-        for result in sent_messages:
-            chat_user_ids.add(result[0])
-        for result in received_messages:
-            chat_user_ids.add(result[0])
-        
-        # Получаем информацию о пользователях
-        chats = []
-        for chat_user_id in chat_user_ids:
-            if chat_user_id != user_id:  # Исключаем самого себя
-                user = db.query(User).filter(User.id == chat_user_id).first()
-                if user:
-                    # Получаем последнее сообщение в чате
-                    last_message = db.query(Message).filter(
-                        ((Message.from_user_id == user_id) & (Message.to_user_id == chat_user_id)) |
-                        ((Message.from_user_id == chat_user_id) & (Message.to_user_id == user_id))
-                    ).order_by(Message.created_at.desc()).first()
-                    
-                    # Считаем непрочитанные сообщения
-                    unread_count = db.query(Message).filter(
-                        (Message.from_user_id == chat_user_id) & 
-                        (Message.to_user_id == user_id) &
-                        (Message.is_read == False)
-                    ).count()
-                    
-                    chats.append({
-                        "user_id": user.id,
-                        "username": user.username,
-                        "display_name": user.display_name,
-                        "is_online": user.is_online,
-                        "unread_count": unread_count,
-                        "last_message": {
-                            "content": last_message.content if last_message else "",
-                            "timestamp": last_message.created_at.isoformat() if last_message else None,
-                            "is_my_message": last_message.from_user_id == user_id if last_message else False
-                        } if last_message else None
-                    })
-        
-        return {
-            "user_id": user_id,
-            "chats": sorted(chats, key=lambda x: x["last_message"]["timestamp"] if x["last_message"] and x["last_message"]["timestamp"] else "", reverse=True)
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ Ошибка получения чатов: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"Ошибка получения списка чатов: {str(e)}"}
-        )
-
 # API для удаления истории чата (только для меня)
-@app.delete("/api/messages/for-me/{other_user_id}")
+@app.delete("/api/messages/for-me/{user_id}/{other_user_id}")
 async def delete_chat_history_for_me(
+    user_id: int, 
     other_user_id: int, 
-    request: Request,
     db: Session = Depends(get_db)
 ):
     try:
-        token = request.cookies.get("access_token")
-        if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
         print(f"🗑️ Удаление истории чата для пользователя {user_id} с {other_user_id}")
         
         # Удаляем только сообщения, где текущий пользователь является отправителем
@@ -646,8 +531,6 @@ async def delete_chat_history_for_me(
             "message": f"История чата удалена для вас ({deleted_count} сообщений)"
         }
         
-    except HTTPException:
-        raise
     except Exception as e:
         db.rollback()
         print(f"❌ Ошибка удаления чата: {e}")
@@ -657,25 +540,16 @@ async def delete_chat_history_for_me(
         )
 
 # API для удаления истории чата (для всех)
-@app.delete("/api/messages/for-all/{other_user_id}")
+@app.delete("/api/messages/for-all/{user_id}/{other_user_id}")
 async def delete_chat_history_for_all(
+    user_id: int, 
     other_user_id: int, 
-    request: Request,
     db: Session = Depends(get_db)
 ):
     try:
-        token = request.cookies.get("access_token")
-        if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
         print(f"🗑️ Удаление истории чата для всех между {user_id} и {other_user_id}")
         
-        # Удаляем ВСЕ сообщения между двумя конкретными пользователями
+        # Удаляем все сообщения между пользователями
         deleted_count = db.query(Message).filter(
             ((Message.from_user_id == user_id) & (Message.to_user_id == other_user_id)) |
             ((Message.from_user_id == other_user_id) & (Message.to_user_id == user_id))
@@ -683,14 +557,13 @@ async def delete_chat_history_for_all(
         
         db.commit()
         
-        print(f"✅ Удалено {deleted_count} сообщений (для всех) между {user_id} и {other_user_id}")
+        print(f"✅ Удалено {deleted_count} сообщений (для всех)")
         
         # Отправляем уведомление другому пользователю через WebSocket если он онлайн
         await manager.send_personal_message(
             json.dumps({
                 "type": "chat_deleted",
                 "deleted_by": user_id,
-                "other_user_id": other_user_id,
                 "message": "История чата была удалена"
             }),
             other_user_id
@@ -700,12 +573,9 @@ async def delete_chat_history_for_all(
             "success": True,
             "deleted_count": deleted_count,
             "deleted_for": "all",
-            "chat_between": [user_id, other_user_id],
             "message": f"История чата удалена для всех участников ({deleted_count} сообщений)"
         }
         
-    except HTTPException:
-        raise
     except Exception as e:
         db.rollback()
         print(f"❌ Ошибка удаления чата: {e}")
@@ -716,35 +586,14 @@ async def delete_chat_history_for_all(
 
 # API для удаления одного сообщения
 @app.delete("/api/message/{message_id}")
-async def delete_message(
-    message_id: int, 
-    request: Request,
-    db: Session = Depends(get_db)
-):
+async def delete_message(message_id: int, db: Session = Depends(get_db)):
     try:
-        token = request.cookies.get("access_token")
-        if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
         message_id = int(message_id)
         message = db.query(Message).filter(Message.id == message_id).first()
-        
         if not message:
             return JSONResponse(
                 status_code=404,
                 content={"detail": "Сообщение не найдено"}
-            )
-        
-        # Проверяем, что пользователь является отправителем сообщения
-        if message.from_user_id != user_id:
-            return JSONResponse(
-                status_code=403,
-                content={"detail": "Вы можете удалять только свои сообщения"}
             )
         
         db.delete(message)
@@ -760,8 +609,6 @@ async def delete_message(
             status_code=400,
             content={"detail": "Неверный ID сообщения"}
         )
-    except HTTPException:
-        raise
     except Exception as e:
         db.rollback()
         return JSONResponse(
@@ -798,6 +645,5 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=port,
-        reload=False,
-        workers=4
+        reload=False
     )
