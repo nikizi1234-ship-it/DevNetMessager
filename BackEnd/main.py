@@ -13,7 +13,7 @@ import os
 from websocket_manager import manager
 from database import engine, SessionLocal, get_db
 from models import Base, User, Message
-from auth import create_access_token, verify_token, ACCESS_TOKEN_EXPIRE_MINUTES, verify_password, get_password_hash, get_current_user
+from auth import create_access_token, verify_token, ACCESS_TOKEN_EXPIRE_MINUTES, verify_password, get_password_hash
 
 # Создаем таблицы
 Base.metadata.create_all(bind=engine)
@@ -400,22 +400,42 @@ async def websocket_endpoint(websocket: WebSocket):
         auth_data = json.loads(data)
         
         if auth_data.get("type") != "auth":
-            await websocket.close(code=1008)
+            await websocket.send_text(json.dumps({
+                "type": "error", 
+                "message": "Требуется аутентификация"
+            }))
+            await websocket.close()
             return
             
         token = auth_data.get("token")
         if not token:
-            await websocket.close(code=1008)
+            await websocket.send_text(json.dumps({
+                "type": "error", 
+                "message": "Токен не предоставлен"
+            }))
+            await websocket.close()
             return
             
         # Проверяем токен
         payload = verify_token(token)
         if not payload:
-            await websocket.close(code=1008)
+            await websocket.send_text(json.dumps({
+                "type": "error", 
+                "message": "Недействительный токен"
+            }))
+            await websocket.close()
             return
             
         user_id = payload.get("user_id")
         username = payload.get("sub")
+        
+        if not user_id:
+            await websocket.send_text(json.dumps({
+                "type": "error", 
+                "message": "Неверный токен"
+            }))
+            await websocket.close()
+            return
         
         # Подключаем пользователя
         await manager.connect(websocket, user_id)
@@ -440,6 +460,8 @@ async def websocket_endpoint(websocket: WebSocket):
             "user_id": user_id,
             "username": username
         }))
+        
+        print(f"🔌 WebSocket аутентифицирован для пользователя {username} (ID: {user_id})")
         
         # Основной цикл обработки сообщений
         while True:
@@ -471,6 +493,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 db.add(db_message)
                 db.commit()
                 db.refresh(db_message)
+                
+                print(f"💬 Сообщение от {user_id} к {message_data['to_user_id']}: {message_data['content'][:50]}...")
                 
                 # Отправляем получателю если он онлайн
                 await manager.send_personal_message(
