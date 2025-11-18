@@ -1,7 +1,7 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Form, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 import json
@@ -94,7 +94,6 @@ create_initial_users()
 # Регистрация пользователя
 @app.post("/api/register")
 async def register(
-    request: Request,
     username: str = Form(...),
     email: str = Form(...),
     password: str = Form(...),
@@ -131,29 +130,18 @@ async def register(
         # Создаем токен
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
-            data={"sub": db_user.username, "user_id": db_user.id}, expires_delta=access_token_expires
+            data={"sub": db_user.username}, expires_delta=access_token_expires
         )
         
         print(f"✅ Пользователь {username} успешно зарегистрирован!")
         
-        response = JSONResponse({
-            "success": True,
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
             "user_id": db_user.id,
             "username": db_user.username,
             "message": "Регистрация успешна!"
-        })
-        
-        # Устанавливаем токен в cookie
-        response.set_cookie(
-            key="access_token",
-            value=access_token,
-            httponly=True,
-            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-            secure=request.url.scheme == "https",
-            samesite="lax"
-        )
-        
-        return response
+        }
         
     except Exception as e:
         print(f"❌ Ошибка регистрации: {e}")
@@ -165,7 +153,6 @@ async def register(
 # Авторизация пользователя
 @app.post("/api/login")
 async def login(
-    request: Request,
     username: str = Form(...),
     password: str = Form(...),
     db: Session = Depends(get_db)
@@ -189,29 +176,18 @@ async def login(
         # Создаем токен
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
-            data={"sub": user.username, "user_id": user.id}, expires_delta=access_token_expires
+            data={"sub": user.username}, expires_delta=access_token_expires
         )
         
         print(f"✅ Пользователь {username} вошел в систему!")
         
-        response = JSONResponse({
-            "success": True,
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
             "user_id": user.id,
             "username": user.username,
             "message": "Вход выполнен успешно!"
-        })
-        
-        # Устанавливаем токен в cookie
-        response.set_cookie(
-            key="access_token",
-            value=access_token,
-            httponly=True,
-            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-            secure=request.url.scheme == "https",
-            samesite="lax"
-        )
-        
-        return response
+        }
         
     except Exception as e:
         print(f"❌ Ошибка входа: {e}")
@@ -221,23 +197,16 @@ async def login(
         )
 
 # Выход пользователя
-@app.post("/api/logout")
-async def logout(request: Request, db: Session = Depends(get_db)):
+@app.post("/api/logout/{user_id}")
+async def logout(user_id: int, db: Session = Depends(get_db)):
     try:
-        token = request.cookies.get("access_token")
-        if token:
-            payload = verify_token(token)
-            if payload:
-                user_id = payload.get("user_id")
-                user = db.query(User).filter(User.id == user_id).first()
-                if user:
-                    user.is_online = False
-                    db.commit()
-                    print(f"✅ Пользователь {user.username} вышел из системы")
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.is_online = False
+            db.commit()
+            print(f"✅ Пользователь {user.username} вышел из системы")
         
-        response = JSONResponse({"success": True, "message": "Выход выполнен успешно"})
-        response.delete_cookie("access_token")
-        return response
+        return {"success": True, "message": "Выход выполнен успешно"}
         
     except Exception as e:
         print(f"❌ Ошибка выхода: {e}")
@@ -245,39 +214,6 @@ async def logout(request: Request, db: Session = Depends(get_db)):
             status_code=500,
             content={"detail": f"Ошибка выхода: {str(e)}"}
         )
-
-# Получение информации о текущем пользователе
-@app.get("/api/me")
-async def get_current_user_info(request: Request, db: Session = Depends(get_db)):
-    try:
-        token = request.cookies.get("access_token")
-        if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
-        user = db.query(User).filter(User.id == user_id).first()
-        
-        if not user:
-            raise HTTPException(status_code=401, detail="Пользователь не найден")
-        
-        return {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "display_name": user.display_name,
-            "is_online": user.is_online or False,
-            "last_login": user.last_login.isoformat() if user.last_login else None,
-            "created_at": user.created_at.isoformat() if user.created_at else None
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
 
 # Простой тест регистрации через GET
 @app.get("/api/test_register")
@@ -317,161 +253,70 @@ async def test_register(db: Session = Depends(get_db)):
     except Exception as e:
         return {"error": str(e)}
 
-# Получение всех пользователей (только для аутентифицированных)
+# Получение всех пользователей
 @app.get("/api/users")
-async def get_all_users(request: Request, db: Session = Depends(get_db)):
-    try:
-        token = request.cookies.get("access_token")
-        if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        current_user_id = payload.get("user_id")
-        users = db.query(User).filter(User.id != current_user_id).all()
-        
-        return {
-            "total_users": len(users),
-            "current_user_id": current_user_id,
-            "users": [
-                {
-                    "id": user.id,
-                    "username": user.username,
-                    "email": user.email,
-                    "display_name": user.display_name,
-                    "is_online": user.is_online or False,
-                    "last_login": user.last_login.isoformat() if user.last_login else None,
-                    "created_at": user.created_at.isoformat() if user.created_at else None
-                }
-                for user in users
-            ]
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
+async def get_all_users(db: Session = Depends(get_db)):
+    users = db.query(User).all()
+    return {
+        "total_users": len(users),
+        "users": [
+            {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "display_name": user.display_name,
+                "is_online": user.is_online or False,
+                "last_login": user.last_login.isoformat() if user.last_login else None,
+                "created_at": user.created_at.isoformat() if user.created_at else None
+            }
+            for user in users
+        ]
+    }
 
 # Получение информации о конкретном пользователе
 @app.get("/api/users/{user_id}")
-async def get_user(user_id: int, request: Request, db: Session = Depends(get_db)):
-    try:
-        token = request.cookies.get("access_token")
-        if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            return JSONResponse(
-                status_code=404,
-                content={"detail": "Пользователь не найден"}
-            )
-        
-        return {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "display_name": user.display_name,
-            "is_online": user.is_online or False,
-            "last_login": user.last_login.isoformat() if user.last_login else None,
-            "created_at": user.created_at.isoformat() if user.created_at else None
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
-
-# WebSocket endpoint с аутентификацией
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
+async def get_user(user_id: int, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Пользователь не найден"}
+        )
     
-    user_id = None
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "display_name": user.display_name,
+        "is_online": user.is_online or False,
+        "last_login": user.last_login.isoformat() if user.last_login else None,
+        "created_at": user.created_at.isoformat() if user.created_at else None
+    }
+
+# WebSocket endpoint
+@app.websocket("/ws/{user_id}")
+async def websocket_endpoint(websocket: WebSocket, user_id: int):
+    await manager.connect(websocket, user_id)
+    
+    # Обновляем статус пользователя как онлайн
+    db = SessionLocal()
     try:
-        # Получаем токен при подключении
-        data = await websocket.receive_text()
-        auth_data = json.loads(data)
-        
-        if auth_data.get("type") != "auth":
-            await websocket.send_text(json.dumps({
-                "type": "error", 
-                "message": "Требуется аутентификация"
-            }))
-            await websocket.close()
-            return
-            
-        token = auth_data.get("token")
-        if not token:
-            await websocket.send_text(json.dumps({
-                "type": "error", 
-                "message": "Токен не предоставлен"
-            }))
-            await websocket.close()
-            return
-            
-        # Проверяем токен
-        payload = verify_token(token)
-        if not payload:
-            await websocket.send_text(json.dumps({
-                "type": "error", 
-                "message": "Недействительный токен"
-            }))
-            await websocket.close()
-            return
-            
-        user_id = payload.get("user_id")
-        username = payload.get("sub")
-        
-        if not user_id:
-            await websocket.send_text(json.dumps({
-                "type": "error", 
-                "message": "Неверный токен"
-            }))
-            await websocket.close()
-            return
-        
-        # Подключаем пользователя
-        await manager.connect(websocket, user_id)
-        
-        # Обновляем статус пользователя как онлайн
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.id == user_id).first()
-            if user:
-                user.is_online = True
-                user.last_login = datetime.utcnow()
-                db.commit()
-                print(f"✅ Пользователь {user.username} подключен (ID: {user_id})")
-        except Exception as e:
-            print(f"❌ Ошибка обновления статуса: {e}")
-        finally:
-            db.close()
-        
-        # Отправляем подтверждение аутентификации
-        await websocket.send_text(json.dumps({
-            "type": "auth_success",
-            "user_id": user_id,
-            "username": username
-        }))
-        
-        print(f"🔌 WebSocket аутентифицирован для пользователя {username} (ID: {user_id})")
-        
-        # Основной цикл обработки сообщений
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.is_online = True
+            user.last_login = datetime.utcnow()
+            db.commit()
+            print(f"✅ Пользователь {user.username} подключен (ID: {user_id})")
+    except Exception as e:
+        print(f"❌ Ошибка обновления статуса: {e}")
+    finally:
+        db.close()
+    
+    try:
         while True:
             data = await websocket.receive_text()
             message_data = json.loads(data)
             
-            # Обрабатываем только сообщения
-            if message_data.get("type") != "message":
-                continue
-                
             # Сохраняем в базу данных
             db = SessionLocal()
             try:
@@ -488,13 +333,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     from_user_id=user_id,
                     to_user_id=message_data["to_user_id"],
                     content=message_data["content"],
-                    message_type=message_data.get("message_type", "text")
+                    message_type=message_data.get("type", "text")
                 )
                 db.add(db_message)
                 db.commit()
                 db.refresh(db_message)
-                
-                print(f"💬 Сообщение от {user_id} к {message_data['to_user_id']}: {message_data['content'][:50]}...")
                 
                 # Отправляем получателю если он онлайн
                 await manager.send_personal_message(
@@ -502,7 +345,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         "type": "message",
                         "id": db_message.id,
                         "from_user_id": user_id,
-                        "to_user_id": message_data["to_user_id"],
                         "content": message_data["content"],
                         "timestamp": db_message.created_at.isoformat()
                     }),
@@ -513,7 +355,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_text(json.dumps({
                     "type": "message_sent",
                     "id": db_message.id,
-                    "to_user_id": message_data["to_user_id"],
                     "timestamp": db_message.created_at.isoformat()
                 }))
                 
@@ -528,177 +369,48 @@ async def websocket_endpoint(websocket: WebSocket):
                 db.close()
                 
     except WebSocketDisconnect:
-        print(f"🔌 WebSocket отключен для пользователя {user_id}")
         # Обновляем статус пользователя как офлайн при отключении
         db = SessionLocal()
         try:
-            if user_id:
-                user = db.query(User).filter(User.id == user_id).first()
-                if user:
-                    user.is_online = False
-                    db.commit()
-                    print(f"✅ Пользователь {user.username} отключен (ID: {user_id})")
+            user = db.query(User).filter(User.id == user_id).first()
+            if user:
+                user.is_online = False
+                db.commit()
+                print(f"✅ Пользователь {user.username} отключен (ID: {user_id})")
         except Exception as e:
             print(f"❌ Ошибка обновления статуса: {e}")
         finally:
             db.close()
         
-        if user_id:
-            manager.disconnect(user_id)
-    except Exception as e:
-        print(f"❌ Ошибка в WebSocket: {e}")
-        try:
-            await websocket.close()
-        except:
-            pass
+        manager.disconnect(user_id)
 
-# API для получения истории сообщений между двумя конкретными пользователями
-@app.get("/api/messages/{other_user_id}")
-async def get_message_history(
-    other_user_id: int, 
-    request: Request,
-    db: Session = Depends(get_db)
-):
-    try:
-        token = request.cookies.get("access_token")
-        if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
-        
-        # Более строгий фильтр - только сообщения между двумя конкретными пользователями
-        messages = db.query(Message).filter(
-            and_(
-                # Сообщения от user_id к other_user_id
-                ((Message.from_user_id == user_id) & (Message.to_user_id == other_user_id)) |
-                # ИЛИ сообщения от other_user_id к user_id
-                ((Message.from_user_id == other_user_id) & (Message.to_user_id == user_id))
-            )
-        ).order_by(Message.created_at.asc()).all()
-        
-        print(f"📨 Загружено {len(messages)} сообщений между пользователями {user_id} и {other_user_id}")
-        
-        return [
-            {
-                "id": msg.id,
-                "from_user_id": msg.from_user_id,
-                "to_user_id": msg.to_user_id,
-                "content": msg.content,
-                "type": msg.message_type,
-                "timestamp": msg.created_at.isoformat(),
-                "is_my_message": msg.from_user_id == user_id
-            }
-            for msg in messages
-        ]
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ Ошибка загрузки сообщений: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"Ошибка загрузки истории сообщений: {str(e)}"}
-        )
-
-# API для получения списка чатов пользователя
-@app.get("/api/chats")
-async def get_user_chats(request: Request, db: Session = Depends(get_db)):
-    try:
-        token = request.cookies.get("access_token")
-        if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
-        
-        # Находим всех пользователей, с которыми есть переписка
-        # Сообщения, где пользователь является отправителем
-        sent_messages = db.query(Message.to_user_id).filter(
-            Message.from_user_id == user_id
-        ).distinct()
-        
-        # Сообщения, где пользователь является получателем  
-        received_messages = db.query(Message.from_user_id).filter(
-            Message.to_user_id == user_id
-        ).distinct()
-        
-        # Объединяем и находим уникальные ID пользователей
-        chat_user_ids = set()
-        for result in sent_messages:
-            chat_user_ids.add(result[0])
-        for result in received_messages:
-            chat_user_ids.add(result[0])
-        
-        # Получаем информацию о пользователях
-        chats = []
-        for chat_user_id in chat_user_ids:
-            if chat_user_id != user_id:  # Исключаем самого себя
-                user = db.query(User).filter(User.id == chat_user_id).first()
-                if user:
-                    # Получаем последнее сообщение в чате
-                    last_message = db.query(Message).filter(
-                        ((Message.from_user_id == user_id) & (Message.to_user_id == chat_user_id)) |
-                        ((Message.from_user_id == chat_user_id) & (Message.to_user_id == user_id))
-                    ).order_by(Message.created_at.desc()).first()
-                    
-                    # Считаем непрочитанные сообщения
-                    unread_count = db.query(Message).filter(
-                        (Message.from_user_id == chat_user_id) & 
-                        (Message.to_user_id == user_id) &
-                        (Message.is_read == False)
-                    ).count()
-                    
-                    chats.append({
-                        "user_id": user.id,
-                        "username": user.username,
-                        "display_name": user.display_name,
-                        "is_online": user.is_online,
-                        "unread_count": unread_count,
-                        "last_message": {
-                            "content": last_message.content if last_message else "",
-                            "timestamp": last_message.created_at.isoformat() if last_message else None,
-                            "is_my_message": last_message.from_user_id == user_id if last_message else False
-                        } if last_message else None
-                    })
-        
-        return {
-            "user_id": user_id,
-            "chats": sorted(chats, key=lambda x: x["last_message"]["timestamp"] if x["last_message"] and x["last_message"]["timestamp"] else "", reverse=True)
+# API для получения истории сообщений
+@app.get("/api/messages/{user_id}/{other_user_id}")
+async def get_message_history(user_id: int, other_user_id: int, db: Session = Depends(get_db)):
+    messages = db.query(Message).filter(
+        ((Message.from_user_id == user_id) & (Message.to_user_id == other_user_id)) |
+        ((Message.from_user_id == other_user_id) & (Message.to_user_id == user_id))
+    ).order_by(Message.created_at.asc()).all()
+    
+    return [
+        {
+            "id": msg.id,
+            "from_user_id": msg.from_user_id,
+            "content": msg.content,
+            "type": msg.message_type,
+            "timestamp": msg.created_at.isoformat()
         }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ Ошибка получения чатов: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"Ошибка получения списка чатов: {str(e)}"}
-        )
+        for msg in messages
+    ]
 
 # API для удаления истории чата (только для меня)
-@app.delete("/api/messages/for-me/{other_user_id}")
+@app.delete("/api/messages/for-me/{user_id}/{other_user_id}")
 async def delete_chat_history_for_me(
+    user_id: int, 
     other_user_id: int, 
-    request: Request,
     db: Session = Depends(get_db)
 ):
     try:
-        token = request.cookies.get("access_token")
-        if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
         print(f"🗑️ Удаление истории чата для пользователя {user_id} с {other_user_id}")
         
         # Удаляем только сообщения, где текущий пользователь является отправителем
@@ -717,8 +429,6 @@ async def delete_chat_history_for_me(
             "message": f"История чата удалена для вас ({deleted_count} сообщений)"
         }
         
-    except HTTPException:
-        raise
     except Exception as e:
         db.rollback()
         print(f"❌ Ошибка удаления чата: {e}")
@@ -728,25 +438,16 @@ async def delete_chat_history_for_me(
         )
 
 # API для удаления истории чата (для всех)
-@app.delete("/api/messages/for-all/{other_user_id}")
+@app.delete("/api/messages/for-all/{user_id}/{other_user_id}")
 async def delete_chat_history_for_all(
+    user_id: int, 
     other_user_id: int, 
-    request: Request,
     db: Session = Depends(get_db)
 ):
     try:
-        token = request.cookies.get("access_token")
-        if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
         print(f"🗑️ Удаление истории чата для всех между {user_id} и {other_user_id}")
         
-        # Удаляем ВСЕ сообщения между двумя конкретными пользователями
+        # Удаляем все сообщения между пользователями
         deleted_count = db.query(Message).filter(
             ((Message.from_user_id == user_id) & (Message.to_user_id == other_user_id)) |
             ((Message.from_user_id == other_user_id) & (Message.to_user_id == user_id))
@@ -754,14 +455,13 @@ async def delete_chat_history_for_all(
         
         db.commit()
         
-        print(f"✅ Удалено {deleted_count} сообщений (для всех) между {user_id} и {other_user_id}")
+        print(f"✅ Удалено {deleted_count} сообщений (для всех)")
         
         # Отправляем уведомление другому пользователю через WebSocket если он онлайн
         await manager.send_personal_message(
             json.dumps({
                 "type": "chat_deleted",
                 "deleted_by": user_id,
-                "other_user_id": other_user_id,
                 "message": "История чата была удалена"
             }),
             other_user_id
@@ -771,12 +471,9 @@ async def delete_chat_history_for_all(
             "success": True,
             "deleted_count": deleted_count,
             "deleted_for": "all",
-            "chat_between": [user_id, other_user_id],
             "message": f"История чата удалена для всех участников ({deleted_count} сообщений)"
         }
         
-    except HTTPException:
-        raise
     except Exception as e:
         db.rollback()
         print(f"❌ Ошибка удаления чата: {e}")
@@ -787,35 +484,15 @@ async def delete_chat_history_for_all(
 
 # API для удаления одного сообщения
 @app.delete("/api/message/{message_id}")
-async def delete_message(
-    message_id: int, 
-    request: Request,
-    db: Session = Depends(get_db)
-):
+async def delete_message(message_id: int, db: Session = Depends(get_db)):
     try:
-        token = request.cookies.get("access_token")
-        if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
+        # Исправление: преобразуем message_id в int
         message_id = int(message_id)
         message = db.query(Message).filter(Message.id == message_id).first()
-        
         if not message:
             return JSONResponse(
                 status_code=404,
                 content={"detail": "Сообщение не найдено"}
-            )
-        
-        # Проверяем, что пользователь является отправителем сообщения
-        if message.from_user_id != user_id:
-            return JSONResponse(
-                status_code=403,
-                content={"detail": "Вы можете удалять только свои сообщения"}
             )
         
         db.delete(message)
@@ -831,8 +508,6 @@ async def delete_message(
             status_code=400,
             content={"detail": "Неверный ID сообщения"}
         )
-    except HTTPException:
-        raise
     except Exception as e:
         db.rollback()
         return JSONResponse(
