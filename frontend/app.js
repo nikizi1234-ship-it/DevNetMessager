@@ -1,129 +1,238 @@
-// Получаем параметры из URL
-const urlParams = new URLSearchParams(window.location.search);
-const currentUserId = parseInt(urlParams.get('user_id') || '1');
-const otherUserId = currentUserId === 1 ? 2 : 1;
-
 // WebSocket соединение
 let websocket = null;
+let currentUserId = null;
+let currentUsername = null;
 
-// Инициализация чата
+// Инициализация приложения
 document.addEventListener('DOMContentLoaded', function() {
-    document.getElementById('current-user').textContent = `User ${currentUserId}`;
-    connectWebSocket();
-    loadMessageHistory();
+    checkAuth();
+    setupEventListeners();
 });
 
-// Получение cookie
-function getCookie(name) {
-    const value = `; ${document.cookie}`;
-    const parts = value.split(`; ${name}=`);
-    if (parts.length === 2) return parts.pop().split(';').shift();
-    return null;
+// Проверка аутентификации
+async function checkAuth() {
+    try {
+        const response = await fetch('/api/me', {
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const userData = await response.json();
+            currentUserId = userData.id;
+            currentUsername = userData.username;
+            
+            document.getElementById('current-user').textContent = userData.display_name || userData.username;
+            document.getElementById('auth-section').style.display = 'none';
+            document.getElementById('chat-section').style.display = 'block';
+            
+            initializeChat();
+        } else {
+            showLoginForm();
+        }
+    } catch (error) {
+        console.error('Auth check failed:', error);
+        showLoginForm();
+    }
+}
+
+// Показать форму входа
+function showLoginForm() {
+    document.getElementById('auth-section').style.display = 'block';
+    document.getElementById('chat-section').style.display = 'none';
+}
+
+// Настройка обработчиков событий
+function setupEventListeners() {
+    // Форма входа
+    document.getElementById('login-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        await login();
+    });
+    
+    // Форма регистрации
+    document.getElementById('register-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        await register();
+    });
+    
+    // Переключение между формами
+    document.getElementById('show-register').addEventListener('click', function() {
+        document.getElementById('login-form').style.display = 'none';
+        document.getElementById('register-form').style.display = 'block';
+    });
+    
+    document.getElementById('show-login').addEventListener('click', function() {
+        document.getElementById('register-form').style.display = 'none';
+        document.getElementById('login-form').style.display = 'block';
+    });
+    
+    // Выход
+    document.getElementById('logout-btn').addEventListener('click', logout);
+}
+
+// Вход в систему
+async function login() {
+    const formData = new FormData(document.getElementById('login-form'));
+    
+    try {
+        const response = await fetch('/api/login', {
+            method: 'POST',
+            body: formData,
+            credentials: 'include'
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            showNotification('✅ Вход выполнен успешно!', 'success');
+            setTimeout(() => {
+                window.location.reload();
+            }, 1000);
+        } else {
+            showNotification(`❌ ${data.detail}`, 'error');
+        }
+    } catch (error) {
+        showNotification('❌ Ошибка подключения к серверу', 'error');
+    }
+}
+
+// Регистрация
+async function register() {
+    const formData = new FormData(document.getElementById('register-form'));
+    
+    try {
+        const response = await fetch('/api/register', {
+            method: 'POST',
+            body: formData,
+            credentials: 'include'
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            showNotification('✅ Регистрация успешна!', 'success');
+            setTimeout(() => {
+                window.location.reload();
+            }, 1000);
+        } else {
+            showNotification(`❌ ${data.detail}`, 'error');
+        }
+    } catch (error) {
+        showNotification('❌ Ошибка подключения к серверу', 'error');
+    }
+}
+
+// Выход из системы
+async function logout() {
+    try {
+        await fetch('/api/logout', {
+            method: 'POST',
+            credentials: 'include'
+        });
+        
+        showNotification('✅ Выход выполнен успешно!', 'success');
+        setTimeout(() => {
+            window.location.reload();
+        }, 1000);
+    } catch (error) {
+        console.error('Logout error:', error);
+    }
+}
+
+// Инициализация чата
+async function initializeChat() {
+    await loadUsers();
+    connectWebSocket();
+    
+    // Загрузка чатов при открытии
+    document.getElementById('load-chats').addEventListener('click', loadChats);
 }
 
 // Подключение к WebSocket
 function connectWebSocket() {
-    const token = getCookie('access_token');
+    if (!currentUserId) return;
     
-    if (!token) {
-        console.error('No access token found');
-        addSystemMessage('❌ Требуется авторизация. Пожалуйста, войдите в систему.');
-        return;
-    }
-
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    const wsUrl = `${protocol}//${window.location.host}/ws/${currentUserId}`;
     
     websocket = new WebSocket(wsUrl);
     
     websocket.onopen = function() {
         console.log('WebSocket connected');
-        // Отправляем аутентификацию
-        websocket.send(JSON.stringify({
-            type: 'auth',
-            token: token
-        }));
+        showNotification('✅ Подключено к чату', 'success');
     };
     
     websocket.onmessage = function(event) {
-        const data = JSON.parse(event.data);
-        handleWebSocketMessage(data);
+        const messageData = JSON.parse(event.data);
+        handleWebSocketMessage(messageData);
     };
     
     websocket.onclose = function() {
         console.log('WebSocket disconnected');
-        addSystemMessage('❌ Соединение потеряно. Переподключение...');
+        showNotification('❌ Соединение потеряно. Переподключение...', 'warning');
         setTimeout(connectWebSocket, 3000);
     };
     
     websocket.onerror = function(error) {
         console.error('WebSocket error:', error);
-        addSystemMessage('❌ Ошибка подключения к серверу');
+        showNotification('❌ Ошибка подключения к серверу', 'error');
     };
 }
 
-// Обработка входящих WebSocket сообщений
-function handleWebSocketMessage(data) {
-    console.log('WebSocket message received:', data);
-    
-    switch (data.type) {
-        case 'auth_success':
-            console.log('✅ WebSocket authenticated successfully');
-            addSystemMessage('✅ Подключено к чату');
-            break;
-            
-        case 'message':
-            displayMessage({
-                from_user_id: data.from_user_id,
-                content: data.content,
-                timestamp: data.timestamp
-            }, data.from_user_id === currentUserId);
-            break;
-            
-        case 'message_sent':
-            console.log('✅ Message sent successfully');
-            // Можно обновить статус сообщения если нужно
-            break;
-            
-        case 'error':
-            console.error('WebSocket error:', data.message);
-            addSystemMessage(`❌ Ошибка: ${data.message}`);
-            break;
-            
-        case 'chat_deleted':
-            addSystemMessage('💬 История чата была удалена');
-            // Перезагружаем историю сообщений
-            loadMessageHistory();
-            break;
-            
-        default:
-            console.log('Unknown message type:', data.type);
+// Обработка WebSocket сообщений
+function handleWebSocketMessage(messageData) {
+    if (messageData.type === 'message') {
+        displayMessage(messageData, messageData.from_user_id === currentUserId);
+    } else if (messageData.type === 'message_sent') {
+        console.log('✅ Message sent successfully');
+    } else if (messageData.type === 'error') {
+        showNotification(`❌ ${messageData.message}`, 'error');
+    } else if (messageData.type === 'chat_deleted') {
+        showNotification('💬 История чата была удалена', 'info');
+        // Перезагружаем текущий чат если нужно
     }
 }
 
-// Загрузка истории сообщений
-async function loadMessageHistory() {
+// Загрузка пользователей
+async function loadUsers() {
     try {
-        const response = await fetch(`/api/messages/${otherUserId}`, {
-            credentials: 'include' // Важно для отправки cookies
+        const response = await fetch('/api/users', {
+            credentials: 'include'
         });
         
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+        if (response.ok) {
+            const data = await response.json();
+            displayUsers(data.users);
         }
-        
-        const messages = await response.json();
-        
-        // Очищаем чат перед загрузкой истории
-        document.getElementById('messages').innerHTML = '';
-        
-        messages.forEach(msg => {
-            displayMessage(msg, msg.from_user_id === currentUserId);
-        });
     } catch (error) {
-        console.error('Error loading message history:', error);
-        addSystemMessage('❌ Ошибка загрузки истории сообщений');
+        console.error('Error loading users:', error);
     }
+}
+
+// Отображение пользователей
+function displayUsers(users) {
+    const usersList = document.getElementById('users-list');
+    usersList.innerHTML = '';
+    
+    users.forEach(user => {
+        const userElement = document.createElement('div');
+        userElement.className = `user-item ${user.is_online ? 'online' : 'offline'}`;
+        userElement.innerHTML = `
+            <div class="user-avatar">${user.display_name.charAt(0)}</div>
+            <div class="user-info">
+                <div class="user-name">${user.display_name}</div>
+                <div class="user-status">${user.is_online ? '🟢 Online' : '⚫ Offline'}</div>
+            </div>
+            <button class="chat-btn" onclick="startChat(${user.id})">💬</button>
+        `;
+        usersList.appendChild(userElement);
+    });
+}
+
+// Начать чат с пользователем
+function startChat(userId) {
+    // Здесь можно реализовать логику открытия чата с конкретным пользователем
+    showNotification(`💬 Начат чат с пользователем ID: ${userId}`, 'info');
 }
 
 // Отправка сообщения
@@ -131,120 +240,35 @@ function sendMessage() {
     const input = document.getElementById('messageInput');
     const content = input.value.trim();
     
-    if (!content) {
-        return;
-    }
-    
-    if (!websocket || websocket.readyState !== WebSocket.OPEN) {
-        addSystemMessage('❌ Нет соединения с сервером');
-        return;
-    }
-    
-    const messageData = {
-        type: 'message',
-        to_user_id: otherUserId,
-        content: content,
-        message_type: 'text'
-    };
-    
-    try {
+    if (content && websocket && websocket.readyState === WebSocket.OPEN) {
+        // В реальном приложении здесь будет ID выбранного пользователя
+        const toUserId = currentUserId === 1 ? 2 : 1;
+        
+        const messageData = {
+            to_user_id: toUserId,
+            content: content,
+            type: 'text'
+        };
+        
         websocket.send(JSON.stringify(messageData));
         input.value = '';
         
-        // Показываем сообщение сразу (optimistic update)
+        // Показываем сообщение сразу
         displayMessage({
             from_user_id: currentUserId,
             content: content,
             timestamp: new Date().toISOString()
         }, true);
-    } catch (error) {
-        console.error('Error sending message:', error);
-        addSystemMessage('❌ Ошибка отправки сообщения');
+    } else if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+        showNotification('❌ Нет соединения с сервером', 'error');
     }
 }
 
-// Отправка по Enter
-document.getElementById('messageInput').addEventListener('keypress', function(e) {
-    if (e.key === 'Enter') {
-        sendMessage();
-    }
-});
-
-// Отображение сообщения в чате
+// Отображение сообщения
 function displayMessage(messageData, isOwn) {
     const messagesDiv = document.getElementById('messages');
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${isOwn ? 'own' : 'other'}`;
     
     const time = new Date(messageData.timestamp).toLocaleTimeString();
-    messageDiv.innerHTML = `
-        <div class="message-content">${escapeHtml(messageData.content)}</div>
-        <small class="message-time">${time}</small>
-    `;
-    
-    messagesDiv.appendChild(messageDiv);
-    messagesDiv.scrollTop = messagesDiv.scrollHeight;
-}
-
-// Экранирование HTML для безопасности
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-// Системные сообщения
-function addSystemMessage(text) {
-    const messagesDiv = document.getElementById('messages');
-    const messageDiv = document.createElement('div');
-    messageDiv.className = 'system-message';
-    messageDiv.textContent = text;
-    
-    messagesDiv.appendChild(messageDiv);
-    messagesDiv.scrollTop = messagesDiv.scrollHeight;
-}
-
-// Добавляем CSS стили для системных сообщений
-const style = document.createElement('style');
-style.textContent = `
-    .system-message {
-        text-align: center;
-        color: #888;
-        margin: 10px 0;
-        font-style: italic;
-        font-size: 0.9em;
-    }
-    
-    .message {
-        margin: 10px 0;
-        padding: 8px 12px;
-        border-radius: 15px;
-        max-width: 70%;
-        word-wrap: break-word;
-    }
-    
-    .message.own {
-        background: #007bff;
-        color: white;
-        margin-left: auto;
-        text-align: right;
-    }
-    
-    .message.other {
-        background: #f1f1f1;
-        color: #333;
-        margin-right: auto;
-    }
-    
-    .message-time {
-        opacity: 0.7;
-        font-size: 0.8em;
-        margin-top: 5px;
-        display: block;
-    }
-    
-    .message-content {
-        margin-bottom: 3px;
-    }
-`;
-document.head.appendChild(style);
+   
