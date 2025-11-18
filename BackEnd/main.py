@@ -345,6 +345,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
                         "type": "message",
                         "id": db_message.id,
                         "from_user_id": user_id,
+                        "to_user_id": message_data["to_user_id"],  # Добавляем получателя
                         "content": message_data["content"],
                         "timestamp": db_message.created_at.isoformat()
                     }),
@@ -355,6 +356,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
                 await websocket.send_text(json.dumps({
                     "type": "message_sent",
                     "id": db_message.id,
+                    "to_user_id": message_data["to_user_id"],  # Добавляем получателя
                     "timestamp": db_message.created_at.isoformat()
                 }))
                 
@@ -384,24 +386,98 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
         
         manager.disconnect(user_id)
 
-# API для получения истории сообщений
+# API для получения истории сообщений между двумя конкретными пользователями
 @app.get("/api/messages/{user_id}/{other_user_id}")
 async def get_message_history(user_id: int, other_user_id: int, db: Session = Depends(get_db)):
-    messages = db.query(Message).filter(
-        ((Message.from_user_id == user_id) & (Message.to_user_id == other_user_id)) |
-        ((Message.from_user_id == other_user_id) & (Message.to_user_id == user_id))
-    ).order_by(Message.created_at.asc()).all()
-    
-    return [
-        {
-            "id": msg.id,
-            "from_user_id": msg.from_user_id,
-            "content": msg.content,
-            "type": msg.message_type,
-            "timestamp": msg.created_at.isoformat()
+    try:
+        # Более строгий фильтр - только сообщения между двумя конкретными пользователями
+        messages = db.query(Message).filter(
+            and_(
+                # Сообщения от user_id к other_user_id
+                ((Message.from_user_id == user_id) & (Message.to_user_id == other_user_id)) |
+                # ИЛИ сообщения от other_user_id к user_id
+                ((Message.from_user_id == other_user_id) & (Message.to_user_id == user_id))
+            )
+        ).order_by(Message.created_at.asc()).all()
+        
+        print(f"📨 Загружено {len(messages)} сообщений между пользователями {user_id} и {other_user_id}")
+        
+        return [
+            {
+                "id": msg.id,
+                "from_user_id": msg.from_user_id,
+                "to_user_id": msg.to_user_id,  # Добавляем информацию о получателе
+                "content": msg.content,
+                "type": msg.message_type,
+                "timestamp": msg.created_at.isoformat()
+            }
+            for msg in messages
+        ]
+        
+    except Exception as e:
+        print(f"❌ Ошибка загрузки сообщений: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Ошибка загрузки истории сообщений: {str(e)}"}
+        )
+
+# API для получения списка чатов пользователя
+@app.get("/api/chats/{user_id}")
+async def get_user_chats(user_id: int, db: Session = Depends(get_db)):
+    try:
+        # Находим всех пользователей, с которыми есть переписка
+        # Сообщения, где пользователь является отправителем
+        sent_messages = db.query(Message.to_user_id).filter(
+            Message.from_user_id == user_id
+        ).distinct()
+        
+        # Сообщения, где пользователь является получателем  
+        received_messages = db.query(Message.from_user_id).filter(
+            Message.to_user_id == user_id
+        ).distinct()
+        
+        # Объединяем и находим уникальные ID пользователей
+        chat_user_ids = set()
+        for result in sent_messages:
+            chat_user_ids.add(result[0])
+        for result in received_messages:
+            chat_user_ids.add(result[0])
+        
+        # Получаем информацию о пользователях
+        chats = []
+        for chat_user_id in chat_user_ids:
+            if chat_user_id != user_id:  # Исключаем самого себя
+                user = db.query(User).filter(User.id == chat_user_id).first()
+                if user:
+                    # Получаем последнее сообщение в чате
+                    last_message = db.query(Message).filter(
+                        ((Message.from_user_id == user_id) & (Message.to_user_id == chat_user_id)) |
+                        ((Message.from_user_id == chat_user_id) & (Message.to_user_id == user_id))
+                    ).order_by(Message.created_at.desc()).first()
+                    
+                    chats.append({
+                        "user_id": user.id,
+                        "username": user.username,
+                        "display_name": user.display_name,
+                        "is_online": user.is_online,
+                        "last_message": {
+                            "content": last_message.content if last_message else "",
+                            "timestamp": last_message.created_at.isoformat() if last_message else None,
+                            "is_my_message": last_message.from_user_id == user_id if last_message else False
+                        } if last_message else None
+                    })
+        
+        return {
+            "user_id": user_id,
+            "chats": sorted(chats, key=lambda x: x["last_message"]["timestamp"] if x["last_message"] and x["last_message"]["timestamp"] else "", reverse=True)
         }
-        for msg in messages
-    ]
+        
+    except Exception as e:
+        print(f"❌ Ошибка получения чатов: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Ошибка получения списка чатов: {str(e)}"}
+        )
 
 # API для удаления истории чата (только для меня)
 @app.delete("/api/messages/for-me/{user_id}/{other_user_id}")
@@ -447,7 +523,7 @@ async def delete_chat_history_for_all(
     try:
         print(f"🗑️ Удаление истории чата для всех между {user_id} и {other_user_id}")
         
-        # Удаляем все сообщения между пользователями
+        # Удаляем ВСЕ сообщения между двумя конкретными пользователями
         deleted_count = db.query(Message).filter(
             ((Message.from_user_id == user_id) & (Message.to_user_id == other_user_id)) |
             ((Message.from_user_id == other_user_id) & (Message.to_user_id == user_id))
@@ -455,13 +531,14 @@ async def delete_chat_history_for_all(
         
         db.commit()
         
-        print(f"✅ Удалено {deleted_count} сообщений (для всех)")
+        print(f"✅ Удалено {deleted_count} сообщений (для всех) между {user_id} и {other_user_id}")
         
         # Отправляем уведомление другому пользователю через WebSocket если он онлайн
         await manager.send_personal_message(
             json.dumps({
                 "type": "chat_deleted",
                 "deleted_by": user_id,
+                "other_user_id": other_user_id,  # Добавляем информацию о чате
                 "message": "История чата была удалена"
             }),
             other_user_id
@@ -471,6 +548,7 @@ async def delete_chat_history_for_all(
             "success": True,
             "deleted_count": deleted_count,
             "deleted_for": "all",
+            "chat_between": [user_id, other_user_id],
             "message": f"История чата удалена для всех участников ({deleted_count} сообщений)"
         }
         
