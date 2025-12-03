@@ -9,14 +9,29 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import uvicorn 
 import os
+import sys
 
-from websocket_manager import manager
-from database import engine, SessionLocal, get_db
-from models import Base, User, Message
-from auth import create_access_token, verify_token, ACCESS_TOKEN_EXPIRE_MINUTES, verify_password, get_password_hash
+# Добавляем путь для импорта модулей
+sys.path.append('/app/BackEnd')
+
+try:
+    from websocket_manager import manager
+    from database import engine, SessionLocal, get_db
+    from models import Base, User, Message
+    from auth import create_access_token, verify_token, ACCESS_TOKEN_EXPIRE_MINUTES, verify_password, get_password_hash
+except ImportError as e:
+    print(f"❌ Import error: {e}")
+    print("📁 Current directory:", os.getcwd())
+    print("📁 Files in current directory:", os.listdir('.'))
+    print("📁 Files in BackEnd:", os.listdir('BackEnd') if os.path.exists('BackEnd') else "BackEnd not found")
+    raise
 
 # Создаем таблицы
-Base.metadata.create_all(bind=engine)
+try:
+    Base.metadata.create_all(bind=engine)
+    print("✅ Database tables created")
+except Exception as e:
+    print(f"❌ Error creating tables: {e}")
 
 app = FastAPI(title="DevNet Messenger")
 
@@ -32,7 +47,15 @@ app.add_middleware(
 current_dir = Path(__file__).parent
 frontend_dir = current_dir.parent / "frontend"
 
+print(f"📁 Current directory: {current_dir}")
 print(f"📁 Frontend directory: {frontend_dir}")
+
+# Проверяем существование frontend
+if frontend_dir.exists():
+    print(f"✅ Frontend exists at: {frontend_dir}")
+    print(f"📁 Files in frontend: {os.listdir(frontend_dir)}")
+else:
+    print(f"❌ Frontend NOT FOUND at: {frontend_dir}")
 
 # Функция для создания тестовых пользователей при запуске
 def create_initial_users():
@@ -616,18 +639,34 @@ async def delete_message(message_id: int, db: Session = Depends(get_db)):
             content={"detail": f"Ошибка удаления сообщения: {str(e)}"}
         )
 
+# Основные маршруты для фронтенда
+@app.get("/")
+async def serve_frontend():
+    if frontend_dir.exists() and (frontend_dir / "index.html").exists():
+        print(f"✅ Serving index.html from {frontend_dir / 'index.html'}")
+        return FileResponse(str(frontend_dir / "index.html"))
+    elif frontend_dir.exists() and (frontend_dir / "chat.html").exists():
+        print(f"✅ Serving chat.html from {frontend_dir / 'chat.html'}")
+        return FileResponse(str(frontend_dir / "chat.html"))
+    else:
+        print(f"❌ No frontend files found in {frontend_dir}")
+        return {"message": "DevNet Messenger API", "frontend": "not_found"}
+
+@app.get("/chat")
+async def serve_chat():
+    if frontend_dir.exists() and (frontend_dir / "chat.html").exists():
+        print(f"✅ Serving chat.html from {frontend_dir / 'chat.html'}")
+        return FileResponse(str(frontend_dir / "chat.html"))
+    else:
+        print(f"❌ chat.html not found in {frontend_dir}")
+        return {"message": "Chat interface not found"}
+
 # Статические файлы фронтенда
 if frontend_dir.exists():
     app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
     print("✅ Static files mounted successfully")
-
-@app.get("/")
-async def read_index():
-    return FileResponse(str(frontend_dir / "index.html"))
-
-@app.get("/chat")
-async def read_chat():
-    return FileResponse(str(frontend_dir / "chat.html"))
+else:
+    print("❌ Frontend directory not found, static files not mounted")
 
 # Health check endpoint
 @app.get("/health")
@@ -635,12 +674,23 @@ async def health_check():
     return {
         "status": "healthy", 
         "service": "DevNet Messenger",
+        "timestamp": datetime.utcnow().isoformat(),
+        "frontend_exists": frontend_dir.exists()
+    }
+
+# Проверка API
+@app.get("/api/test")
+async def api_test():
+    return {
+        "status": "ok",
+        "message": "API is working",
         "timestamp": datetime.utcnow().isoformat()
     }
 
-# Для production на Railway
+# Для запуска на Railway
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
+    print(f"🚀 Starting server on port {port}")
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
