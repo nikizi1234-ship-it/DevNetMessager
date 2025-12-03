@@ -1049,18 +1049,22 @@ async def handle_typing_indicator(message_data, sender_id):
             receiver_id
         )
     elif chat_id:
-        members = db.query(ChatMember).filter(ChatMember.chat_id == chat_id).all()
-        for member in members:
-            if member.user_id != sender_id:
-                await manager.send_personal_message(
-                    json.dumps({
-                        "type": "typing",
-                        "chat_id": chat_id,
-                        "from_user_id": sender_id,
-                        "is_typing": is_typing
-                    }),
-                    member.user_id
-                )
+        db = SessionLocal()
+        try:
+            members = db.query(ChatMember).filter(ChatMember.chat_id == chat_id).all()
+            for member in members:
+                if member.user_id != sender_id:
+                    await manager.send_personal_message(
+                        json.dumps({
+                            "type": "typing",
+                            "chat_id": chat_id,
+                            "from_user_id": sender_id,
+                            "is_typing": is_typing
+                        }),
+                        member.user_id
+                    )
+        finally:
+            db.close()
 
 async def handle_read_receipt(message_data, sender_id):
     """Обработка подтверждения прочтения"""
@@ -1154,6 +1158,32 @@ async def get_message_history(
             content={"detail": f"Ошибка загрузки истории сообщений: {str(e)}"}
         )
 
+# Выход пользователя
+@app.post("/api/logout")
+async def logout(request: Request, db: Session = Depends(get_db)):
+    try:
+        token = request.cookies.get("access_token")
+        if token:
+            payload = verify_token(token)
+            if payload:
+                user_id = payload.get("user_id")
+                user = db.query(User).filter(User.id == user_id).first()
+                if user:
+                    user.is_online = False
+                    db.commit()
+                    print(f"✅ Пользователь {user.username} вышел из системы")
+        
+        response = JSONResponse({"success": True, "message": "Выход выполнен успешно"})
+        response.delete_cookie("access_token")
+        return response
+        
+    except Exception as e:
+        print(f"❌ Ошибка выхода: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Ошибка выхода: {str(e)}"}
+        )
+
 # Статические файлы для загруженных файлов
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
@@ -1187,5 +1217,4 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port,
         reload=False
-    )
     )
