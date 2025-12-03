@@ -1,15 +1,26 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
+from sqlalchemy.orm import Session
+from sqlalchemy import and_
 import json
-import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+import uvicorn 
+import os
+
+from websocket_manager import manager
+from database import engine, SessionLocal, get_db
+from models import Base, User, Message
+from auth import create_access_token, verify_token, ACCESS_TOKEN_EXPIRE_MINUTES, verify_password, get_password_hash
+
+# Создаем таблицы
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="DevNet Messenger")
 
-# CORS
+# CORS для фронтенда
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,328 +28,618 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Получаем пути
+# Получаем абсолютный путь к frontend
 current_dir = Path(__file__).parent
-project_root = current_dir.parent
-frontend_dir = project_root / "frontend"
+frontend_dir = current_dir.parent / "frontend"
 
-print(f"📁 Project root: {project_root}")
 print(f"📁 Frontend directory: {frontend_dir}")
-print(f"📁 Current directory: {current_dir}")
 
-# WebSocket менеджер
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections = {}
-
-    async def connect(self, websocket: WebSocket, user_id: int):
-        await websocket.accept()
-        self.active_connections[user_id] = websocket
-        print(f"✅ User {user_id} connected")
-
-    def disconnect(self, user_id: int):
-        if user_id in self.active_connections:
-            del self.active_connections[user_id]
-            print(f"✅ User {user_id} disconnected")
-
-    async def send_personal_message(self, message: str, user_id: int):
-        if user_id in self.active_connections:
-            await self.active_connections[user_id].send_text(message)
-
-manager = ConnectionManager()
-
-# Проверяем существование frontend директории
-if frontend_dir.exists():
-    print(f"✅ Frontend directory exists: {frontend_dir}")
-    
-    # Монтируем статические файлы
-    app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
-    
-    # Обслуживаем chat.html
-    @app.get("/")
-    async def serve_chat():
-        chat_file = frontend_dir / "chat.html"
-        if chat_file.exists():
-            print(f"✅ Serving chat.html from {chat_file}")
-            return FileResponse(str(chat_file))
+# Функция для создания тестовых пользователей при запуске
+def create_initial_users():
+    db = SessionLocal()
+    try:
+        # Проверяем есть ли уже пользователи
+        existing_users = db.query(User).count()
+        if existing_users == 0:
+            print("👥 Создаем тестовых пользователей...")
+            
+            test_users = [
+                User(
+                    username="user1",
+                    email="user1@example.com",
+                    display_name="User One",
+                    password_hash=get_password_hash("password123"),
+                    is_online=False
+                ),
+                User(
+                    username="user2", 
+                    email="user2@example.com",
+                    display_name="User Two", 
+                    password_hash=get_password_hash("password123"),
+                    is_online=False
+                ),
+                User(
+                    username="user3",
+                    email="user3@example.com",
+                    display_name="User Three",
+                    password_hash=get_password_hash("password123"),
+                    is_online=False
+                )
+            ]
+            
+            for user in test_users:
+                db.add(user)
+            
+            db.commit()
+            print("✅ Тестовые пользователи созданы!")
         else:
-            print(f"❌ chat.html not found at {chat_file}")
-            return HTMLResponse(content="<h1>Chat page not found</h1>")
-    
-    @app.get("/chat")
-    async def serve_chat_page():
-        chat_file = frontend_dir / "chat.html"
-        if chat_file.exists():
-            return FileResponse(str(chat_file))
-        return HTMLResponse(content="<h1>Chat page not found</h1>")
-    
-    @app.get("/test-frontend")
-    async def test_frontend():
-        chat_file = frontend_dir / "chat.html"
-        if chat_file.exists():
-            return {"status": "found", "path": str(chat_file)}
-        return {"status": "not_found", "path": str(chat_file)}
-    
-else:
-    print(f"❌ Frontend directory not found: {frontend_dir}")
-    
-    @app.get("/")
-    async def root():
-        return {"message": "DevNet Messenger API", "status": "running", "frontend": "not_found"}
-    
-    @app.get("/chat")
-    async def chat_page():
-        return {"message": "Frontend not deployed", "status": "use_api"}
+            print(f"✅ В базе уже есть {existing_users} пользователей")
+            
+    except Exception as e:
+        print(f"❌ Ошибка создания пользователей: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
-# API endpoints
-@app.get("/health")
-async def health_check():
-    return {
-        "status": "healthy", 
-        "service": "DevNet Messenger",
-        "timestamp": datetime.utcnow().isoformat(),
-        "port": os.environ.get("PORT", "8000"),
-        "frontend_exists": frontend_dir.exists()
-    }
+# Создаем пользователей при запуске
+create_initial_users()
 
-@app.get("/api/status")
-async def api_status():
-    return {
-        "status": "online",
-        "users_connected": len(manager.active_connections),
-        "timestamp": datetime.utcnow().isoformat(),
-        "frontend": "available" if frontend_dir.exists() else "not_available"
-    }
+# Регистрация пользователя
+@app.post("/api/register")
+async def register(
+    request: Request,
+    username: str = Form(...),
+    email: str = Form(...),
+    password: str = Form(...),
+    display_name: str = Form(None),
+    db: Session = Depends(get_db)
+):
+    try:
+        print(f"🔧 Регистрация пользователя: {username}")
+        
+        # Проверяем, существует ли пользователь
+        existing_user = db.query(User).filter(
+            (User.username == username) | (User.email == email)
+        ).first()
+        
+        if existing_user:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Пользователь с таким именем или email уже существует"}
+            )
+        
+        # Создаем нового пользователя
+        db_user = User(
+            username=username,
+            email=email,
+            display_name=display_name or username,
+            password_hash=get_password_hash(password),
+            is_online=False
+        )
+        
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+        
+        # Создаем токен
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": db_user.username, "user_id": db_user.id}, expires_delta=access_token_expires
+        )
+        
+        print(f"✅ Пользователь {username} успешно зарегистрирован!")
+        
+        response = JSONResponse({
+            "success": True,
+            "user_id": db_user.id,
+            "username": db_user.username,
+            "message": "Регистрация успешна!"
+        })
+        
+        # Устанавливаем токен в cookie
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            secure=request.url.scheme == "https",
+            samesite="lax"
+        )
+        
+        return response
+        
+    except Exception as e:
+        print(f"❌ Ошибка регистрации: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Ошибка сервера: {str(e)}"}
+        )
 
-@app.post("/api/auto-login")
-async def auto_login(request: Request):
-    return JSONResponse({
-        "success": True,
-        "user": {
-            "id": 1,
-            "username": "guest_user",
-            "display_name": "Guest User",
-            "is_guest": True
-        },
-        "message": "Guest account created"
-    })
+# Авторизация пользователя
+@app.post("/api/login")
+async def login(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    try:
+        print(f"🔧 Попытка входа: {username}")
+        
+        user = db.query(User).filter(User.username == username).first()
+        
+        if not user or not verify_password(password, user.password_hash):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Неверное имя пользователя или пароль"}
+            )
+        
+        # Обновляем время последнего входа
+        user.last_login = datetime.utcnow()
+        user.is_online = True
+        db.commit()
+        
+        # Создаем токен
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.username, "user_id": user.id}, expires_delta=access_token_expires
+        )
+        
+        print(f"✅ Пользователь {username} вошел в систему!")
+        
+        response = JSONResponse({
+            "success": True,
+            "user_id": user.id,
+            "username": user.username,
+            "message": "Вход выполнен успешно!"
+        })
+        
+        # Устанавливаем токен в cookie
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            secure=request.url.scheme == "https",
+            samesite="lax"
+        )
+        
+        return response
+        
+    except Exception as e:
+        print(f"❌ Ошибка входа: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Ошибка сервера: {str(e)}"}
+        )
 
-@app.get("/api/users")
-async def get_users():
-    return {
-        "users": [
-            {
-                "id": 1,
-                "username": "user1",
-                "display_name": "User One",
-                "is_online": True,
-                "avatar": "U1"
-            },
-            {
-                "id": 2,
-                "username": "user2",
-                "display_name": "User Two",
-                "is_online": False,
-                "avatar": "U2"
-            },
-            {
-                "id": 3,
-                "username": "user3",
-                "display_name": "User Three",
-                "is_online": True,
-                "avatar": "U3"
-            },
-            {
-                "id": 4,
-                "username": "alice",
-                "display_name": "Alice Smith",
-                "is_online": True,
-                "avatar": "AS"
-            },
-            {
-                "id": 5,
-                "username": "bob",
-                "display_name": "Bob Johnson",
-                "is_online": False,
-                "avatar": "BJ"
-            }
-        ]
-    }
+# Выход пользователя
+@app.post("/api/logout")
+async def logout(request: Request, db: Session = Depends(get_db)):
+    try:
+        token = request.cookies.get("access_token")
+        if token:
+            payload = verify_token(token)
+            if payload:
+                user_id = payload.get("user_id")
+                user = db.query(User).filter(User.id == user_id).first()
+                if user:
+                    user.is_online = False
+                    db.commit()
+                    print(f"✅ Пользователь {user.username} вышел из системы")
+        
+        response = JSONResponse({"success": True, "message": "Выход выполнен успешно"})
+        response.delete_cookie("access_token")
+        return response
+        
+    except Exception as e:
+        print(f"❌ Ошибка выхода: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Ошибка выхода: {str(e)}"}
+        )
 
-@app.get("/api/chats")
-async def get_chats():
-    return {
-        "groups": [
-            {
-                "id": 1,
-                "name": "DevNet Team",
-                "description": "Team of developers",
-                "type": "group",
-                "members_count": 5,
-                "avatar": "👥"
-            },
-            {
-                "id": 2,
-                "name": "Secret Project",
-                "description": "Top secret development",
-                "type": "group",
-                "members_count": 3,
-                "avatar": "🔒"
-            }
-        ],
-        "channels": [
-            {
-                "id": 3,
-                "name": "Tech News",
-                "description": "Latest technology updates",
-                "type": "channel",
-                "members_count": 12,
-                "avatar": "📢"
-            },
-            {
-                "id": 4,
-                "name": "Announcements",
-                "description": "Important announcements",
-                "type": "channel",
-                "members_count": 8,
-                "avatar": "📢"
-            }
-        ],
-        "private_chats": [
-            {
-                "id": 1,
-                "name": "User Two",
-                "type": "private",
-                "username": "user2",
-                "is_online": False,
-                "avatar": "U2"
-            },
-            {
-                "id": 2,
-                "name": "Alice Smith",
-                "type": "private",
-                "username": "alice",
-                "is_online": True,
-                "avatar": "AS"
-            }
-        ]
-    }
-
-@app.get("/api/messages/{user_id}")
-async def get_messages(user_id: int):
-    # Тестовые сообщения
-    return [
-        {
-            "id": 1,
-            "from_user_id": user_id,
-            "to_user_id": 1,
-            "content": "Привет! Как дела?",
-            "type": "text",
-            "timestamp": "2023-12-03T10:00:00Z",
-            "is_my_message": True
-        },
-        {
-            "id": 2,
-            "from_user_id": 1,
-            "to_user_id": user_id,
-            "content": "Привет! Все отлично, работаю над новым проектом!",
-            "type": "text",
-            "timestamp": "2023-12-03T10:01:00Z",
-            "is_my_message": False
-        },
-        {
-            "id": 3,
-            "from_user_id": user_id,
-            "to_user_id": 1,
-            "content": "Круто! А что за проект?",
-            "type": "text",
-            "timestamp": "2023-12-03T10:02:00Z",
-            "is_my_message": True
+# Получение информации о текущем пользователе
+@app.get("/api/me")
+async def get_current_user_info(request: Request, db: Session = Depends(get_db)):
+    try:
+        token = request.cookies.get("access_token")
+        if not token:
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Недействительный токен")
+        
+        user_id = payload.get("user_id")
+        user = db.query(User).filter(User.id == user_id).first()
+        
+        if not user:
+            raise HTTPException(status_code=401, detail="Пользователь не найден")
+        
+        return {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "display_name": user.display_name,
+            "is_online": user.is_online or False,
+            "last_login": user.last_login.isoformat() if user.last_login else None,
+            "created_at": user.created_at.isoformat() if user.created_at else None
         }
-    ]
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
+
+# Простой тест регистрации через GET
+@app.get("/api/test_register")
+async def test_register(db: Session = Depends(get_db)):
+    try:
+        # Создаем дополнительных тестовых пользователей
+        test_users = [
+            User(
+                username="testuser",
+                email="test@example.com",
+                display_name="Test User",
+                password_hash=get_password_hash("test123"),
+                is_online=False
+            ),
+            User(
+                username="developer",
+                email="dev@example.com", 
+                display_name="Developer",
+                password_hash=get_password_hash("dev123"),
+                is_online=False
+            )
+        ]
+        
+        for user in test_users:
+            # Проверяем нет ли уже такого пользователя
+            existing = db.query(User).filter(User.username == user.username).first()
+            if not existing:
+                db.add(user)
+        
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Тестовые пользователи созданы! Пароли: test123 / dev123"
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+# Получение всех пользователей
+@app.get("/api/users")
+async def get_all_users(request: Request, db: Session = Depends(get_db)):
+    try:
+        token = request.cookies.get("access_token")
+        if not token:
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Недействительный токен")
+        
+        current_user_id = payload.get("user_id")
+        users = db.query(User).filter(User.id != current_user_id).all()
+        
+        return {
+            "total_users": len(users),
+            "current_user_id": current_user_id,
+            "users": [
+                {
+                    "id": user.id,
+                    "username": user.username,
+                    "email": user.email,
+                    "display_name": user.display_name,
+                    "is_online": user.is_online or False,
+                    "last_login": user.last_login.isoformat() if user.last_login else None,
+                    "created_at": user.created_at.isoformat() if user.created_at else None
+                }
+                for user in users
+            ]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
+
+# Получение информации о конкретном пользователе
+@app.get("/api/users/{user_id}")
+async def get_user(user_id: int, request: Request, db: Session = Depends(get_db)):
+    try:
+        token = request.cookies.get("access_token")
+        if not token:
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Недействительный токен")
+        
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Пользователь не найден"}
+            )
+        
+        return {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "display_name": user.display_name,
+            "is_online": user.is_online or False,
+            "last_login": user.last_login.isoformat() if user.last_login else None,
+            "created_at": user.created_at.isoformat() if user.created_at else None
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
 
 # WebSocket endpoint
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: int):
     await manager.connect(websocket, user_id)
     
+    # Обновляем статус пользователя как онлайн
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.is_online = True
+            user.last_login = datetime.utcnow()
+            db.commit()
+            print(f"✅ Пользователь {user.username} подключен (ID: {user_id})")
+    except Exception as e:
+        print(f"❌ Ошибка обновления статуса: {e}")
+    finally:
+        db.close()
+    
     try:
         while True:
             data = await websocket.receive_text()
+            message_data = json.loads(data)
+            
+            # Сохраняем в базу данных
+            db = SessionLocal()
             try:
-                message_data = json.loads(data)
-                print(f"📨 Received from user {user_id}: {message_data}")
-                
-                # Определяем тип сообщения
-                message_type = message_data.get("type", "message")
-                
-                if message_type == "message":
-                    response = {
-                        "type": "message_received",
-                        "id": message_data.get("id", 1),
-                        "from_user_id": user_id,
-                        "to_user_id": message_data.get("to_user_id"),
-                        "content": message_data.get("content", ""),
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "status": "delivered"
-                    }
-                    
-                    # Отправляем ответ
-                    await websocket.send_text(json.dumps(response))
-                    
-                    # Если есть получатель, отправляем ему
-                    to_user_id = message_data.get("to_user_id")
-                    if to_user_id and to_user_id != user_id:
-                        await manager.send_personal_message(
-                            json.dumps({
-                                "type": "message",
-                                "id": response["id"],
-                                "from_user_id": user_id,
-                                "content": message_data.get("content", ""),
-                                "timestamp": response["timestamp"]
-                            }),
-                            to_user_id
-                        )
-                
-                elif message_type == "typing":
-                    # Индикатор набора текста
-                    to_user_id = message_data.get("to_user_id")
-                    is_typing = message_data.get("is_typing", False)
-                    
-                    if to_user_id and to_user_id != user_id:
-                        await manager.send_personal_message(
-                            json.dumps({
-                                "type": "typing",
-                                "from_user_id": user_id,
-                                "is_typing": is_typing
-                            }),
-                            to_user_id
-                        )
-                
-                elif message_type == "test":
+                # Проверяем существует ли получатель
+                receiver = db.query(User).filter(User.id == message_data["to_user_id"]).first()
+                if not receiver:
                     await websocket.send_text(json.dumps({
-                        "type": "test_response",
-                        "message": "WebSocket работает!",
-                        "timestamp": datetime.utcnow().isoformat()
+                        "type": "error",
+                        "message": "Пользователь не найден"
                     }))
+                    continue
                 
-            except json.JSONDecodeError:
+                db_message = Message(
+                    from_user_id=user_id,
+                    to_user_id=message_data["to_user_id"],
+                    content=message_data["content"],
+                    message_type=message_data.get("type", "text")
+                )
+                db.add(db_message)
+                db.commit()
+                db.refresh(db_message)
+                
+                # Отправляем получателю если он онлайн
+                await manager.send_personal_message(
+                    json.dumps({
+                        "type": "message",
+                        "id": db_message.id,
+                        "from_user_id": user_id,
+                        "to_user_id": message_data["to_user_id"],
+                        "content": message_data["content"],
+                        "timestamp": db_message.created_at.isoformat()
+                    }),
+                    message_data["to_user_id"]
+                )
+                
+                # Подтверждение отправки отправителю
                 await websocket.send_text(json.dumps({
-                    "type": "error",
-                    "message": "Invalid JSON format"
+                    "type": "message_sent",
+                    "id": db_message.id,
+                    "to_user_id": message_data["to_user_id"],
+                    "timestamp": db_message.created_at.isoformat()
                 }))
                 
+            except Exception as e:
+                db.rollback()
+                print(f"❌ Database error: {e}")
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "message": f"Ошибка отправки: {str(e)}"
+                }))
+            finally:
+                db.close()
+                
     except WebSocketDisconnect:
+        # Обновляем статус пользователя как офлайн при отключении
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == user_id).first()
+            if user:
+                user.is_online = False
+                db.commit()
+                print(f"✅ Пользователь {user.username} отключен (ID: {user_id})")
+        except Exception as e:
+            print(f"❌ Ошибка обновления статуса: {e}")
+        finally:
+            db.close()
+        
         manager.disconnect(user_id)
+
+# API для получения истории сообщений
+@app.get("/api/messages/{user_id}/{other_user_id}")
+async def get_message_history(user_id: int, other_user_id: int, db: Session = Depends(get_db)):
+    try:
+        messages = db.query(Message).filter(
+            ((Message.from_user_id == user_id) & (Message.to_user_id == other_user_id)) |
+            ((Message.from_user_id == other_user_id) & (Message.to_user_id == user_id))
+        ).order_by(Message.created_at.asc()).all()
+        
+        print(f"📨 Загружено {len(messages)} сообщений между пользователями {user_id} и {other_user_id}")
+        
+        return [
+            {
+                "id": msg.id,
+                "from_user_id": msg.from_user_id,
+                "to_user_id": msg.to_user_id,
+                "content": msg.content,
+                "type": msg.message_type,
+                "timestamp": msg.created_at.isoformat(),
+                "is_my_message": msg.from_user_id == user_id
+            }
+            for msg in messages
+        ]
+        
     except Exception as e:
-        print(f"❌ WebSocket error: {e}")
-        manager.disconnect(user_id)
+        print(f"❌ Ошибка загрузки сообщений: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Ошибка загрузки истории сообщений: {str(e)}"}
+        )
 
-print(f"🚀 Server starting on port {os.environ.get('PORT', 8000)}")
+# API для удаления истории чата (только для меня)
+@app.delete("/api/messages/for-me/{user_id}/{other_user_id}")
+async def delete_chat_history_for_me(
+    user_id: int, 
+    other_user_id: int, 
+    db: Session = Depends(get_db)
+):
+    try:
+        print(f"🗑️ Удаление истории чата для пользователя {user_id} с {other_user_id}")
+        
+        # Удаляем только сообщения, где текущий пользователь является отправителем
+        deleted_count = db.query(Message).filter(
+            (Message.from_user_id == user_id) & (Message.to_user_id == other_user_id)
+        ).delete()
+        
+        db.commit()
+        
+        print(f"✅ Удалено {deleted_count} сообщений (только для меня)")
+        
+        return {
+            "success": True,
+            "deleted_count": deleted_count,
+            "deleted_for": "me",
+            "message": f"История чата удалена для вас ({deleted_count} сообщений)"
+        }
+        
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Ошибка удаления чата: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Ошибка удаления чата: {str(e)}"}
+        )
 
-# Для локального запуска
+# API для удаления истории чата (для всех)
+@app.delete("/api/messages/for-all/{user_id}/{other_user_id}")
+async def delete_chat_history_for_all(
+    user_id: int, 
+    other_user_id: int, 
+    db: Session = Depends(get_db)
+):
+    try:
+        print(f"🗑️ Удаление истории чата для всех между {user_id} и {other_user_id}")
+        
+        # Удаляем все сообщения между пользователями
+        deleted_count = db.query(Message).filter(
+            ((Message.from_user_id == user_id) & (Message.to_user_id == other_user_id)) |
+            ((Message.from_user_id == other_user_id) & (Message.to_user_id == user_id))
+        ).delete()
+        
+        db.commit()
+        
+        print(f"✅ Удалено {deleted_count} сообщений (для всех)")
+        
+        # Отправляем уведомление другому пользователю через WebSocket если он онлайн
+        await manager.send_personal_message(
+            json.dumps({
+                "type": "chat_deleted",
+                "deleted_by": user_id,
+                "message": "История чата была удалена"
+            }),
+            other_user_id
+        )
+        
+        return {
+            "success": True,
+            "deleted_count": deleted_count,
+            "deleted_for": "all",
+            "message": f"История чата удалена для всех участников ({deleted_count} сообщений)"
+        }
+        
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Ошибка удаления чата: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Ошибка удаления чата: {str(e)}"}
+        )
+
+# API для удаления одного сообщения
+@app.delete("/api/message/{message_id}")
+async def delete_message(message_id: int, db: Session = Depends(get_db)):
+    try:
+        message_id = int(message_id)
+        message = db.query(Message).filter(Message.id == message_id).first()
+        if not message:
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Сообщение не найдено"}
+            )
+        
+        db.delete(message)
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Сообщение удалено"
+        }
+        
+    except ValueError:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Неверный ID сообщения"}
+        )
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Ошибка удаления сообщения: {str(e)}"}
+        )
+
+# Статические файлы фронтенда
+if frontend_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
+    print("✅ Static files mounted successfully")
+
+@app.get("/")
+async def read_index():
+    return FileResponse(str(frontend_dir / "index.html"))
+
+@app.get("/chat")
+async def read_chat():
+    return FileResponse(str(frontend_dir / "chat.html"))
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy", 
+        "service": "DevNet Messenger",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+# Для production на Railway
 if __name__ == "__main__":
-    import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(
         "main:app",
