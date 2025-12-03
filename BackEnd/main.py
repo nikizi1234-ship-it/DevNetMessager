@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Form, Request, File, UploadFile
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Form, Request, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -11,11 +11,11 @@ import uvicorn
 import os
 import shutil
 import uuid
-from typing import List, Optional
+from typing import Optional
 
 from websocket_manager import manager
 from database import engine, SessionLocal, get_db
-from models import Base, User, Message, Chat, ChatMember, StickerPack, Sticker, File as FileModel, Channel, Group
+from models import Base, User, Message, Group, GroupMember, Channel, ChannelSubscriber, StickerPack, Sticker, File as FileModel
 from auth import create_access_token, verify_token, ACCESS_TOKEN_EXPIRE_MINUTES, verify_password, get_password_hash
 
 # Создаем таблицы
@@ -38,6 +38,8 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 (UPLOAD_DIR / "stickers").mkdir(exist_ok=True)
 (UPLOAD_DIR / "files").mkdir(exist_ok=True)
 
+print("📁 Upload directory created")
+
 # Получаем абсолютный путь к frontend
 current_dir = Path(__file__).parent
 frontend_dir = current_dir.parent / "frontend"
@@ -51,7 +53,7 @@ def create_initial_data():
         # Проверяем есть ли уже пользователи
         existing_users = db.query(User).count()
         if existing_users == 0:
-            print("👥 Создаем тестовых пользователей...")
+            print("👥 Creating test users...")
             
             test_users = [
                 User(
@@ -74,20 +76,6 @@ def create_initial_data():
                     display_name="User Three",
                     password_hash=get_password_hash("password123"),
                     is_online=False
-                ),
-                User(
-                    username="alice",
-                    email="alice@example.com",
-                    display_name="Alice Smith",
-                    password_hash=get_password_hash("password123"),
-                    is_online=False
-                ),
-                User(
-                    username="bob",
-                    email="bob@example.com",
-                    display_name="Bob Johnson",
-                    password_hash=get_password_hash("password123"),
-                    is_online=False
                 )
             ]
             
@@ -95,109 +83,13 @@ def create_initial_data():
                 db.add(user)
             
             db.commit()
-            print("✅ Тестовые пользователи созданы!")
-            
-            # Создаем тестовые группы
-            print("👥 Создаем тестовые группы...")
-            
-            # Получаем ID пользователей
-            users = db.query(User).all()
-            
-            # Создаем группу
-            group = Group(
-                name="DevNet Team",
-                description="Команда разработчиков",
-                created_by=users[0].id,
-                is_public=True
-            )
-            db.add(group)
-            db.commit()
-            db.refresh(group)
-            
-            # Добавляем участников в группу
-            for i, user in enumerate(users[:3]):
-                chat_member = ChatMember(
-                    chat_id=group.id,
-                    user_id=user.id,
-                    role="admin" if i == 0 else "member"
-                )
-                db.add(chat_member)
-            
-            # Создаем канал
-            channel = Channel(
-                name="Tech News",
-                description="Последние новости технологий",
-                created_by=users[0].id,
-                is_public=True
-            )
-            db.add(channel)
-            db.commit()
-            db.refresh(channel)
-            
-            # Добавляем создателя в канал
-            chat_member = ChatMember(
-                chat_id=channel.id,
-                user_id=users[0].id,
-                role="admin"
-            )
-            db.add(chat_member)
-            
-            # Создаем приватную группу
-            private_group = Group(
-                name="Secret Project",
-                description="Секретный проект разработки",
-                created_by=users[1].id,
-                is_public=False,
-                invite_link=str(uuid.uuid4())[:8]
-            )
-            db.add(private_group)
-            db.commit()
-            db.refresh(private_group)
-            
-            # Добавляем участников в приватную группу
-            for user in users[1:4]:
-                chat_member = ChatMember(
-                    chat_id=private_group.id,
-                    user_id=user.id,
-                    role="member"
-                )
-                db.add(chat_member)
-            
-            # Создаем тестовые стикерпаки
-            print("🎨 Создаем тестовые стикерпаки...")
-            
-            sticker_packs = [
-                StickerPack(
-                    name="Cute Animals",
-                    publisher="DevNet",
-                    is_animated=False,
-                    is_free=True
-                ),
-                StickerPack(
-                    name="Tech Memes",
-                    publisher="DevNet",
-                    is_animated=False,
-                    is_free=True
-                ),
-                StickerPack(
-                    name="Animated Emojis",
-                    publisher="DevNet",
-                    is_animated=True,
-                    is_free=True
-                )
-            ]
-            
-            for pack in sticker_packs:
-                db.add(pack)
-            
-            db.commit()
-            print("✅ Тестовые данные созданы!")
+            print("✅ Test users created!")
             
         else:
-            print(f"✅ В базе уже есть {existing_users} пользователей")
+            print(f"✅ Database already has {existing_users} users")
             
     except Exception as e:
-        print(f"❌ Ошибка создания данных: {e}")
+        print(f"❌ Error creating data: {e}")
         db.rollback()
     finally:
         db.close()
@@ -242,7 +134,7 @@ async def auto_login(
                             "username": user.username,
                             "display_name": user.display_name
                         },
-                        "message": "Пользователь уже авторизован"
+                        "message": "User already authenticated"
                     })
         
         # Создаем нового пользователя (гостя)
@@ -251,7 +143,7 @@ async def auto_login(
         nouns = ["Fox", "Wolf", "Eagle", "Tiger", "Lion", "Bear", "Hawk", "Falcon"]
         
         username = f"{random.choice(adjectives)}_{random.choice(nouns)}_{random.randint(100, 999)}"
-        display_name = f"Гость {random.randint(1000, 9999)}"
+        display_name = f"Guest {random.randint(1000, 9999)}"
         email = f"{username}@temp.devnet.com"
         
         # Проверяем уникальность username
@@ -263,7 +155,7 @@ async def auto_login(
             username=username,
             email=email,
             display_name=display_name,
-            password_hash=get_password_hash(str(uuid.uuid4())),  # Случайный пароль
+            password_hash=get_password_hash(str(uuid.uuid4())),
             is_online=True,
             is_guest=True
         )
@@ -273,7 +165,7 @@ async def auto_login(
         db.refresh(user)
         
         # Создаем токен
-        access_token_expires = timedelta(days=7)  # Гостевой токен на 7 дней
+        access_token_expires = timedelta(days=7)
         access_token = create_access_token(
             data={"sub": user.username, "user_id": user.id, "is_guest": True},
             expires_delta=access_token_expires
@@ -287,7 +179,7 @@ async def auto_login(
                 "display_name": user.display_name,
                 "is_guest": user.is_guest
             },
-            "message": "Гостевой аккаунт создан"
+            "message": "Guest account created"
         })
         
         # Устанавливаем токен в cookie
@@ -295,7 +187,7 @@ async def auto_login(
             key="access_token",
             value=access_token,
             httponly=True,
-            max_age=7 * 24 * 60 * 60,  # 7 дней
+            max_age=7 * 24 * 60 * 60,
             secure=request.url.scheme == "https",
             samesite="lax"
         )
@@ -303,10 +195,10 @@ async def auto_login(
         return response
         
     except Exception as e:
-        print(f"❌ Ошибка автоматического входа: {e}")
+        print(f"❌ Auto-login error: {e}")
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Ошибка создания аккаунта: {str(e)}"}
+            content={"detail": f"Account creation error: {str(e)}"}
         )
 
 # Регистрация пользователя
@@ -320,7 +212,7 @@ async def register(
     db: Session = Depends(get_db)
 ):
     try:
-        print(f"🔧 Регистрация пользователя: {username}")
+        print(f"🔧 Registering user: {username}")
         
         # Проверяем, существует ли пользователь
         existing_user = db.query(User).filter(
@@ -330,7 +222,7 @@ async def register(
         if existing_user:
             return JSONResponse(
                 status_code=400,
-                content={"detail": "Пользователь с таким именем или email уже существует"}
+                content={"detail": "User with this username or email already exists"}
             )
         
         # Создаем нового пользователя
@@ -354,7 +246,7 @@ async def register(
             expires_delta=access_token_expires
         )
         
-        print(f"✅ Пользователь {username} успешно зарегистрирован!")
+        print(f"✅ User {username} registered successfully!")
         
         response = JSONResponse({
             "success": True,
@@ -364,7 +256,7 @@ async def register(
                 "display_name": db_user.display_name,
                 "is_guest": db_user.is_guest
             },
-            "message": "Регистрация успешна!"
+            "message": "Registration successful!"
         })
         
         # Устанавливаем токен в cookie
@@ -380,10 +272,10 @@ async def register(
         return response
         
     except Exception as e:
-        print(f"❌ Ошибка регистрации: {e}")
+        print(f"❌ Registration error: {e}")
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Ошибка сервера: {str(e)}"}
+            content={"detail": f"Server error: {str(e)}"}
         )
 
 # Авторизация пользователя
@@ -395,20 +287,20 @@ async def login(
     db: Session = Depends(get_db)
 ):
     try:
-        print(f"🔧 Попытка входа: {username}")
+        print(f"🔧 Login attempt: {username}")
         
         user = db.query(User).filter(User.username == username).first()
         
         if not user or not verify_password(password, user.password_hash):
             return JSONResponse(
                 status_code=401,
-                content={"detail": "Неверное имя пользователя или пароль"}
+                content={"detail": "Invalid username or password"}
             )
         
         # Обновляем время последнего входа
         user.last_login = datetime.utcnow()
         user.is_online = True
-        user.is_guest = False  # Если был гостем, теперь полноценный пользователь
+        user.is_guest = False
         db.commit()
         
         # Создаем токен
@@ -418,7 +310,7 @@ async def login(
             expires_delta=access_token_expires
         )
         
-        print(f"✅ Пользователь {username} вошел в систему!")
+        print(f"✅ User {username} logged in!")
         
         response = JSONResponse({
             "success": True,
@@ -428,7 +320,7 @@ async def login(
                 "display_name": user.display_name,
                 "is_guest": user.is_guest
             },
-            "message": "Вход выполнен успешно!"
+            "message": "Login successful!"
         })
         
         # Устанавливаем токен в cookie
@@ -444,17 +336,17 @@ async def login(
         return response
         
     except Exception as e:
-        print(f"❌ Ошибка входа: {e}")
+        print(f"❌ Login error: {e}")
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Ошибка сервера: {str(e)}"}
+            content={"detail": f"Server error: {str(e)}"}
         )
 
 # Получение информации о текущем пользователе
 @app.get("/api/me")
 async def get_current_user_info(current_user: User = Depends(get_current_user)):
     if not current_user:
-        raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        raise HTTPException(status_code=401, detail="Authentication required")
     
     return {
         "id": current_user.id,
@@ -474,7 +366,7 @@ async def get_all_users(
     db: Session = Depends(get_db)
 ):
     if not current_user:
-        raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        raise HTTPException(status_code=401, detail="Authentication required")
     
     users = db.query(User).filter(User.id != current_user.id).all()
     
@@ -505,41 +397,39 @@ async def get_chats(
     db: Session = Depends(get_db)
 ):
     if not current_user:
-        raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        raise HTTPException(status_code=401, detail="Authentication required")
     
-    # Получаем чаты, в которых пользователь является участником
-    chat_members = db.query(ChatMember).filter(ChatMember.user_id == current_user.id).all()
-    chat_ids = [cm.chat_id for cm in chat_members]
-    
-    # Получаем информацию о чатах
-    chats = []
-    for chat_id in chat_ids:
-        # Проверяем тип чата
-        group = db.query(Group).filter(Group.id == chat_id).first()
+    # Получаем группы пользователя
+    group_memberships = db.query(GroupMember).filter(GroupMember.user_id == current_user.id).all()
+    groups = []
+    for membership in group_memberships:
+        group = db.query(Group).filter(Group.id == membership.group_id).first()
         if group:
-            chats.append({
+            groups.append({
                 "id": group.id,
                 "name": group.name,
                 "description": group.description,
                 "type": "group",
                 "is_public": group.is_public,
-                "members_count": db.query(ChatMember).filter(ChatMember.chat_id == group.id).count(),
+                "members_count": db.query(GroupMember).filter(GroupMember.group_id == group.id).count(),
                 "created_at": group.created_at.isoformat() if group.created_at else None
             })
-            continue
-            
-        channel = db.query(Channel).filter(Channel.id == chat_id).first()
+    
+    # Получаем каналы пользователя
+    channel_subscriptions = db.query(ChannelSubscriber).filter(ChannelSubscriber.user_id == current_user.id).all()
+    channels = []
+    for subscription in channel_subscriptions:
+        channel = db.query(Channel).filter(Channel.id == subscription.channel_id).first()
         if channel:
-            chats.append({
+            channels.append({
                 "id": channel.id,
                 "name": channel.name,
                 "description": channel.description,
                 "type": "channel",
                 "is_public": channel.is_public,
-                "members_count": db.query(ChatMember).filter(ChatMember.chat_id == channel.id).count(),
+                "members_count": db.query(ChannelSubscriber).filter(ChannelSubscriber.channel_id == channel.id).count(),
                 "created_at": channel.created_at.isoformat() if channel.created_at else None
             })
-            continue
     
     # Получаем приватные чаты с пользователями
     private_chats = []
@@ -564,8 +454,8 @@ async def get_chats(
             })
     
     return {
-        "groups": [chat for chat in chats if chat["type"] == "group"],
-        "channels": [chat for chat in chats if chat["type"] == "channel"],
+        "groups": groups,
+        "channels": channels,
         "private_chats": private_chats
     }
 
@@ -579,7 +469,7 @@ async def create_group(
     db: Session = Depends(get_db)
 ):
     if not current_user:
-        raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        raise HTTPException(status_code=401, detail="Authentication required")
     
     try:
         group = Group(
@@ -595,12 +485,12 @@ async def create_group(
         db.refresh(group)
         
         # Добавляем создателя как администратора
-        chat_member = ChatMember(
-            chat_id=group.id,
+        group_member = GroupMember(
+            group_id=group.id,
             user_id=current_user.id,
             role="admin"
         )
-        db.add(chat_member)
+        db.add(group_member)
         db.commit()
         
         return {
@@ -611,12 +501,12 @@ async def create_group(
                 "description": group.description,
                 "invite_link": group.invite_link
             },
-            "message": "Группа создана успешно"
+            "message": "Group created successfully"
         }
         
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Ошибка создания группы: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error creating group: {str(e)}")
 
 # Создание канала
 @app.post("/api/channels")
@@ -628,7 +518,7 @@ async def create_channel(
     db: Session = Depends(get_db)
 ):
     if not current_user:
-        raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        raise HTTPException(status_code=401, detail="Authentication required")
     
     try:
         channel = Channel(
@@ -643,12 +533,12 @@ async def create_channel(
         db.refresh(channel)
         
         # Добавляем создателя как администратора
-        chat_member = ChatMember(
-            chat_id=channel.id,
+        channel_subscriber = ChannelSubscriber(
+            channel_id=channel.id,
             user_id=current_user.id,
             role="admin"
         )
-        db.add(chat_member)
+        db.add(channel_subscriber)
         db.commit()
         
         return {
@@ -658,12 +548,12 @@ async def create_channel(
                 "name": channel.name,
                 "description": channel.description
             },
-            "message": "Канал создан успешно"
+            "message": "Channel created successfully"
         }
         
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Ошибка создания канала: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error creating channel: {str(e)}")
 
 # Получение стикерпаков
 @app.get("/api/stickers")
@@ -672,7 +562,7 @@ async def get_sticker_packs(
     db: Session = Depends(get_db)
 ):
     if not current_user:
-        raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        raise HTTPException(status_code=401, detail="Authentication required")
     
     sticker_packs = db.query(StickerPack).all()
     
@@ -684,23 +574,13 @@ async def get_sticker_packs(
                 "publisher": pack.publisher,
                 "is_animated": pack.is_animated,
                 "is_free": pack.is_free,
-                "cover_url": pack.cover_url,
-                "stickers": [
-                    {
-                        "id": sticker.id,
-                        "emoji": sticker.emoji,
-                        "url": sticker.url,
-                        "width": sticker.width,
-                        "height": sticker.height
-                    }
-                    for sticker in pack.stickers
-                ] if hasattr(pack, 'stickers') else []
+                "cover_url": pack.cover_url
             }
             for pack in sticker_packs
         ]
     }
 
-# Загрузка файлов (изображений, документов)
+# Загрузка файлов
 @app.post("/api/upload")
 async def upload_file(
     file: UploadFile = File(...),
@@ -709,7 +589,7 @@ async def upload_file(
     db: Session = Depends(get_db)
 ):
     if not current_user:
-        raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        raise HTTPException(status_code=401, detail="Authentication required")
     
     try:
         # Генерируем уникальное имя файла
@@ -754,7 +634,7 @@ async def upload_file(
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка загрузки файла: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload error: {str(e)}")
 
 # WebSocket endpoint
 @app.websocket("/ws/{user_id}")
@@ -769,9 +649,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
             user.is_online = True
             user.last_login = datetime.utcnow()
             db.commit()
-            print(f"✅ Пользователь {user.username} подключен (ID: {user_id})")
+            print(f"✅ User {user.username} connected (ID: {user_id})")
     except Exception as e:
-        print(f"❌ Ошибка обновления статуса: {e}")
+        print(f"❌ Error updating status: {e}")
     finally:
         db.close()
     
@@ -781,33 +661,25 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
             message_data = json.loads(data)
             message_type = message_data.get("type", "message")
             
-            # Обработка различных типов сообщений
+            # Обработка сообщений
             if message_type == "message":
                 await handle_text_message(message_data, user_id)
             elif message_type == "sticker":
                 await handle_sticker_message(message_data, user_id)
             elif message_type == "image":
                 await handle_image_message(message_data, user_id)
-            elif message_type == "group_message":
-                await handle_group_message(message_data, user_id)
-            elif message_type == "channel_message":
-                await handle_channel_message(message_data, user_id)
-            elif message_type == "typing":
-                await handle_typing_indicator(message_data, user_id)
-            elif message_type == "read_receipt":
-                await handle_read_receipt(message_data, user_id)
                 
     except WebSocketDisconnect:
-        # Обновляем статус пользователя как офлайн при отключении
+        # Обновляем статус пользователя как офлайн
         db = SessionLocal()
         try:
             user = db.query(User).filter(User.id == user_id).first()
             if user:
                 user.is_online = False
                 db.commit()
-                print(f"✅ Пользователь {user.username} отключен (ID: {user_id})")
+                print(f"✅ User {user.username} disconnected (ID: {user_id})")
         except Exception as e:
-            print(f"❌ Ошибка обновления статуса: {e}")
+            print(f"❌ Error updating status: {e}")
         finally:
             db.close()
         
@@ -818,7 +690,8 @@ async def handle_text_message(message_data, sender_id):
     db = SessionLocal()
     try:
         receiver_id = message_data.get("to_user_id")
-        chat_id = message_data.get("chat_id")
+        group_id = message_data.get("group_id")
+        channel_id = message_data.get("channel_id")
         content = message_data.get("content", "")
         
         if not content.strip():
@@ -827,7 +700,8 @@ async def handle_text_message(message_data, sender_id):
         db_message = Message(
             from_user_id=sender_id,
             to_user_id=receiver_id,
-            chat_id=chat_id,
+            group_id=group_id,
+            channel_id=channel_id,
             content=content,
             message_type="text"
         )
@@ -850,16 +724,16 @@ async def handle_text_message(message_data, sender_id):
                 receiver_id
             )
         
-        # Отправляем в группу/канал если есть chat_id
-        elif chat_id:
-            members = db.query(ChatMember).filter(ChatMember.chat_id == chat_id).all()
+        # Отправляем в группу
+        elif group_id:
+            members = db.query(GroupMember).filter(GroupMember.group_id == group_id).all()
             for member in members:
-                if member.user_id != sender_id:  # Не отправляем отправителю
+                if member.user_id != sender_id:
                     await manager.send_personal_message(
                         json.dumps({
                             "type": "group_message",
                             "id": db_message.id,
-                            "chat_id": chat_id,
+                            "group_id": group_id,
                             "from_user_id": sender_id,
                             "content": content,
                             "timestamp": db_message.created_at.isoformat()
@@ -888,14 +762,14 @@ async def handle_sticker_message(message_data, sender_id):
     db = SessionLocal()
     try:
         receiver_id = message_data.get("to_user_id")
-        chat_id = message_data.get("chat_id")
+        group_id = message_data.get("group_id")
         sticker_id = message_data.get("sticker_id")
         
         db_message = Message(
             from_user_id=sender_id,
             to_user_id=receiver_id,
-            chat_id=chat_id,
-            content="",  # Для стикеров контент пустой
+            group_id=group_id,
+            content="",
             message_type="sticker",
             sticker_id=sticker_id
         )
@@ -923,15 +797,15 @@ async def handle_sticker_message(message_data, sender_id):
                 }),
                 receiver_id
             )
-        elif chat_id:
-            members = db.query(ChatMember).filter(ChatMember.chat_id == chat_id).all()
+        elif group_id:
+            members = db.query(GroupMember).filter(GroupMember.group_id == group_id).all()
             for member in members:
                 if member.user_id != sender_id:
                     await manager.send_personal_message(
                         json.dumps({
                             "type": "sticker",
                             "id": db_message.id,
-                            "chat_id": chat_id,
+                            "group_id": group_id,
                             "from_user_id": sender_id,
                             "sticker": {
                                 "id": sticker.id,
@@ -963,14 +837,14 @@ async def handle_image_message(message_data, sender_id):
     db = SessionLocal()
     try:
         receiver_id = message_data.get("to_user_id")
-        chat_id = message_data.get("chat_id")
+        group_id = message_data.get("group_id")
         image_url = message_data.get("image_url")
         caption = message_data.get("caption", "")
         
         db_message = Message(
             from_user_id=sender_id,
             to_user_id=receiver_id,
-            chat_id=chat_id,
+            group_id=group_id,
             content=caption,
             message_type="image",
             file_url=image_url
@@ -993,15 +867,15 @@ async def handle_image_message(message_data, sender_id):
                 }),
                 receiver_id
             )
-        elif chat_id:
-            members = db.query(ChatMember).filter(ChatMember.chat_id == chat_id).all()
+        elif group_id:
+            members = db.query(GroupMember).filter(GroupMember.group_id == group_id).all()
             for member in members:
                 if member.user_id != sender_id:
                     await manager.send_personal_message(
                         json.dumps({
                             "type": "image",
                             "id": db_message.id,
-                            "chat_id": chat_id,
+                            "group_id": group_id,
                             "from_user_id": sender_id,
                             "image_url": image_url,
                             "caption": caption,
@@ -1025,89 +899,23 @@ async def handle_image_message(message_data, sender_id):
     finally:
         db.close()
 
-async def handle_group_message(message_data, sender_id):
-    """Обработка сообщений в группах"""
-    await handle_text_message(message_data, sender_id)
-
-async def handle_channel_message(message_data, sender_id):
-    """Обработка сообщений в каналах"""
-    await handle_text_message(message_data, sender_id)
-
-async def handle_typing_indicator(message_data, sender_id):
-    """Обработка индикатора набора текста"""
-    receiver_id = message_data.get("to_user_id")
-    chat_id = message_data.get("chat_id")
-    is_typing = message_data.get("is_typing", False)
-    
-    if receiver_id:
-        await manager.send_personal_message(
-            json.dumps({
-                "type": "typing",
-                "from_user_id": sender_id,
-                "is_typing": is_typing
-            }),
-            receiver_id
-        )
-    elif chat_id:
-        db = SessionLocal()
-        try:
-            members = db.query(ChatMember).filter(ChatMember.chat_id == chat_id).all()
-            for member in members:
-                if member.user_id != sender_id:
-                    await manager.send_personal_message(
-                        json.dumps({
-                            "type": "typing",
-                            "chat_id": chat_id,
-                            "from_user_id": sender_id,
-                            "is_typing": is_typing
-                        }),
-                        member.user_id
-                    )
-        finally:
-            db.close()
-
-async def handle_read_receipt(message_data, sender_id):
-    """Обработка подтверждения прочтения"""
-    message_id = message_data.get("message_id")
-    
-    db = SessionLocal()
-    try:
-        message = db.query(Message).filter(Message.id == message_id).first()
-        if message:
-            message.read_at = datetime.utcnow()
-            db.commit()
-            
-            # Отправляем отправителю, что его сообщение прочитано
-            await manager.send_personal_message(
-                json.dumps({
-                    "type": "read_receipt",
-                    "message_id": message_id,
-                    "read_at": datetime.utcnow().isoformat()
-                }),
-                message.from_user_id
-            )
-    except Exception as e:
-        print(f"❌ Read receipt error: {e}")
-    finally:
-        db.close()
-
 # API для получения истории сообщений
 @app.get("/api/messages")
 async def get_message_history(
-    chat_id: Optional[int] = None,
+    group_id: Optional[int] = None,
     user_id: Optional[int] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     if not current_user:
-        raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        raise HTTPException(status_code=401, detail="Authentication required")
     
     try:
-        if chat_id:
-            # Получаем сообщения из чата (группы/канала)
-            messages = db.query(Message).filter(Message.chat_id == chat_id).order_by(Message.created_at.asc()).all()
+        if group_id:
+            # Получаем сообщения из группы
+            messages = db.query(Message).filter(Message.group_id == group_id).order_by(Message.created_at.asc()).all()
         elif user_id:
-            # Получаем приватные сообщения между пользователями
+            # Получаем приватные сообщения
             messages = db.query(Message).filter(
                 or_(
                     and_(Message.from_user_id == current_user.id, Message.to_user_id == user_id),
@@ -1117,7 +925,7 @@ async def get_message_history(
         else:
             return JSONResponse(
                 status_code=400,
-                content={"detail": "Необходимо указать chat_id или user_id"}
+                content={"detail": "Specify group_id or user_id"}
             )
         
         formatted_messages = []
@@ -1126,7 +934,7 @@ async def get_message_history(
                 "id": msg.id,
                 "from_user_id": msg.from_user_id,
                 "to_user_id": msg.to_user_id,
-                "chat_id": msg.chat_id,
+                "group_id": msg.group_id,
                 "content": msg.content,
                 "type": msg.message_type,
                 "timestamp": msg.created_at.isoformat(),
@@ -1134,28 +942,19 @@ async def get_message_history(
                 "is_my_message": msg.from_user_id == current_user.id
             }
             
-            # Добавляем дополнительную информацию в зависимости от типа сообщения
-            if msg.message_type == "sticker" and msg.sticker_id:
-                sticker = db.query(Sticker).filter(Sticker.id == msg.sticker_id).first()
-                if sticker:
-                    message_data["sticker"] = {
-                        "id": sticker.id,
-                        "url": sticker.url,
-                        "emoji": sticker.emoji
-                    }
-            elif msg.message_type == "image" and msg.file_url:
+            if msg.message_type == "image" and msg.file_url:
                 message_data["image_url"] = msg.file_url
             
             formatted_messages.append(message_data)
         
-        print(f"📨 Загружено {len(messages)} сообщений")
+        print(f"📨 Loaded {len(messages)} messages")
         return formatted_messages
         
     except Exception as e:
-        print(f"❌ Ошибка загрузки сообщений: {e}")
+        print(f"❌ Error loading messages: {e}")
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Ошибка загрузки истории сообщений: {str(e)}"}
+            content={"detail": f"Error loading message history: {str(e)}"}
         )
 
 # Выход пользователя
@@ -1171,36 +970,40 @@ async def logout(request: Request, db: Session = Depends(get_db)):
                 if user:
                     user.is_online = False
                     db.commit()
-                    print(f"✅ Пользователь {user.username} вышел из системы")
+                    print(f"✅ User {user.username} logged out")
         
-        response = JSONResponse({"success": True, "message": "Выход выполнен успешно"})
+        response = JSONResponse({"success": True, "message": "Logout successful"})
         response.delete_cookie("access_token")
         return response
         
     except Exception as e:
-        print(f"❌ Ошибка выхода: {e}")
+        print(f"❌ Logout error: {e}")
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Ошибка выхода: {str(e)}"}
+            content={"detail": f"Logout error: {str(e)}"}
         )
 
-# Статические файлы для загруженных файлов
+# Статические файлы
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
-# Статические файлы фронтенда
+# Frontend
 if frontend_dir.exists():
     app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
-    print("✅ Static files mounted successfully")
+    print("✅ Static files mounted")
 
 @app.get("/")
 async def read_index():
-    return FileResponse(str(frontend_dir / "index.html"))
+    if frontend_dir.exists():
+        return FileResponse(str(frontend_dir / "index.html"))
+    return {"message": "DevNet Messenger API"}
 
 @app.get("/chat")
 async def read_chat():
-    return FileResponse(str(frontend_dir / "chat.html"))
+    if frontend_dir.exists():
+        return FileResponse(str(frontend_dir / "chat.html"))
+    return {"message": "Chat interface not found"}
 
-# Health check endpoint
+# Health check
 @app.get("/health")
 async def health_check():
     return {
@@ -1209,7 +1012,6 @@ async def health_check():
         "timestamp": datetime.utcnow().isoformat()
     }
 
-# Для production на Railway
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(
