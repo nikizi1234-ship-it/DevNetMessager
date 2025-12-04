@@ -3,31 +3,41 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 
-# В Railway используем SQLite в постоянной директории /data
-# чтобы файл не терялся при перезапусках
-if os.environ.get("RAILWAY_ENVIRONMENT"):
-    # В Railway
-    SQLITE_PATH = "/data/devnet.db"
-    print("🚂 Running on Railway, using persistent storage at /data/")
-else:
-    # Локально
-    SQLITE_PATH = "./devnet.db"
-    print("💻 Running locally")
+# Определяем среду выполнения
+IS_RAILWAY = os.environ.get("RAILWAY_ENVIRONMENT") is not None
+IS_PRODUCTION = os.environ.get("ENVIRONMENT") == "production"
 
-DATABASE_URL = f"sqlite:///{SQLITE_PATH}"
+# Выбираем БД в зависимости от среды
+if IS_RAILWAY:
+    # На Railway используем in-memory SQLite
+    DATABASE_URL = "sqlite:///:memory:"
+    print("🚂 Running on Railway - using IN-MEMORY SQLite")
+    print("⚠️  WARNING: All data will be lost on app restart!")
+else:
+    # Локально используем файловую SQLite
+    DATABASE_URL = "sqlite:///./devnet.db"
+    print("💻 Running locally - using file-based SQLite")
+
 print(f"🔧 Database URL: {DATABASE_URL}")
 
-# Создаем директорию если не существует (для Railway)
-if SQLITE_PATH.startswith("/data/"):
-    os.makedirs(os.path.dirname(SQLITE_PATH), exist_ok=True)
-
 try:
-    engine = create_engine(
-        DATABASE_URL,
-        connect_args={"check_same_thread": False},
-        pool_pre_ping=True
-    )
-    print("✅ SQLite database engine created successfully")
+    if DATABASE_URL == "sqlite:///:memory:":
+        # In-memory SQLite для Railway
+        engine = create_engine(
+            DATABASE_URL,
+            connect_args={"check_same_thread": False},
+            echo=False  # Отключаем логи SQL для производительности
+        )
+        print("✅ In-memory SQLite engine created")
+    else:
+        # Файловая SQLite для локальной разработки
+        engine = create_engine(
+            DATABASE_URL,
+            connect_args={"check_same_thread": False},
+            echo=True  # Включаем логи для отладки
+        )
+        print("✅ File-based SQLite engine created")
+        
 except Exception as e:
     print(f"❌ Database connection failed: {e}")
     raise
