@@ -9,7 +9,7 @@
     "startCommand": "cd BackEnd && python main.py",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10,
-    "healthcheckPath": "/health",
+    "healthcheckPath": null,
     "healthcheckTimeout": 60
   }
 }
