@@ -11,5 +11,9 @@
     "restartPolicyMaxRetries": 10,
     "healthcheckPath": null,
     "healthcheckTimeout": 60
+  },
+  "mounts": {
+    "type": "volume",
+    "target": "/data"
   }
 }
