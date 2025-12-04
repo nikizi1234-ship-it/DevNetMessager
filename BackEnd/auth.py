@@ -11,9 +11,7 @@ ACCESS_TOKEN_EXPIRE_DAYS = 7
 # Настройка CryptContext с правильными параметрами
 pwd_context = CryptContext(
     schemes=["bcrypt"],
-    deprecated="auto",
-    bcrypt__max_password_length=72,  # Явно указываем ограничение
-    bcrypt__default_rounds=12  # Оптимальное количество раундов для баланса безопасности/производительности
+    deprecated="auto"
 )
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
