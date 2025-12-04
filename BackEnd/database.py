@@ -6,6 +6,11 @@ import os
 # Пробуем PostgreSQL из Railway, если нет - используем SQLite
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./devnet.db")
 
+# Если Railway предоставил шаблонный URL (с 'user', 'pass', 'host', 'port')
+if DATABASE_URL == "postgresql://user:pass@host:port/dbname":
+    print("⚠️  Railway DATABASE_URL is a placeholder, using SQLite")
+    DATABASE_URL = "sqlite:///./devnet.db"
+
 # Исправляем URL для SQLAlchemy (Railway использует postgres://, а нужно postgresql://)
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -14,8 +19,15 @@ print(f"🔧 Database URL: {DATABASE_URL}")
 
 try:
     # Пытаемся подключиться к базе
-    engine = create_engine(DATABASE_URL)
-    print("✅ Database engine created successfully")
+    if DATABASE_URL.startswith("sqlite"):
+        engine = create_engine(
+            DATABASE_URL, 
+            connect_args={"check_same_thread": False}
+        )
+        print("✅ SQLite database engine created successfully")
+    else:
+        engine = create_engine(DATABASE_URL)
+        print("✅ PostgreSQL database engine created successfully")
 except Exception as e:
     print(f"❌ Database connection failed: {e}")
     print("🔧 Fallback to SQLite: sqlite:///./devnet.db")
