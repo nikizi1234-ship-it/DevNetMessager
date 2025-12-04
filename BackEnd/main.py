@@ -22,10 +22,10 @@ try:
     from websocket_manager import manager
     from database import engine, SessionLocal, get_db
     from models import Base, User, Message, Group, GroupMember, File as FileModel
-    from auth import create_access_token, verify_token, ACCESS_TOKEN_EXPIRE_MINUTES, verify_password, get_password_hash
-    print("✅ All modules imported successfully")
+    from auth import create_access_token, verify_token, verify_password, get_password_hash
+    print("✅ Все модули успешно импортированы")
 except ImportError as e:
-    print(f"❌ Import error: {e}")
+    print(f"❌ Ошибка импорта: {e}")
     raise
 
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
@@ -35,7 +35,9 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="DevNet Messenger API",
     description="API для мессенджера DevNet с поддержкой WebSocket",
-    version="3.0.0"
+    version="4.0.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc"
 )
 
 # Настройка CORS
@@ -52,26 +54,25 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 (UPLOAD_DIR / "images").mkdir(exist_ok=True)
 
-print(f"📁 Upload directories created at: {UPLOAD_DIR}")
+print(f"📁 Директория для загрузок: {UPLOAD_DIR}")
 
 # Получаем абсолютный путь к фронтенду
 current_dir = Path(__file__).parent
 project_root = current_dir.parent
 frontend_dir = project_root / "frontend"
 
-print(f"📁 Project root: {project_root}")
-print(f"📁 Frontend directory: {frontend_dir}")
+print(f"📁 Корневая директория: {project_root}")
+print(f"📁 Фронтенд директория: {frontend_dir}")
 
 # Проверяем существование фронтенда
 if frontend_dir.exists():
-    print(f"✅ Frontend found: {frontend_dir}")
-    print(f"📁 Files in frontend: {os.listdir(frontend_dir)}")
+    print(f"✅ Фронтенд найден: {frontend_dir}")
     
     # Монтируем статические файлы
     app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
-    print("✅ Static files mounted")
+    print("✅ Статические файлы подключены")
 else:
-    print(f"⚠️  Frontend not found at: {frontend_dir}")
+    print(f"⚠️  Фронтенд не найден: {frontend_dir}")
 
 # Монтируем директорию загрузок
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
@@ -89,31 +90,40 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
         return None
     
     user_id = payload.get("user_id")
+    if not user_id:
+        return None
+    
     user = db.query(User).filter(User.id == user_id).first()
     return user
 
-def validate_username(username: str) -> bool:
+def validate_username(username: str) -> tuple[bool, str]:
     """Проверяет валидность имени пользователя"""
     if len(username) < 3:
-        return False
+        return False, "Имя пользователя должно быть не менее 3 символов"
     if len(username) > 50:
-        return False
+        return False, "Имя пользователя должно быть не более 50 символов"
     if not re.match(r'^[a-zA-Z0-9_.-]+$', username):
-        return False
-    return True
+        return False, "Имя пользователя может содержать только буквы, цифры, точки, дефисы и подчеркивания"
+    return True, ""
 
-def validate_email(email: str) -> bool:
+def validate_email(email: str) -> tuple[bool, str]:
     """Проверяет валидность email"""
+    if len(email) > 100:
+        return False, "Email слишком длинный"
+    
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    return bool(re.match(pattern, email))
+    if not re.match(pattern, email):
+        return False, "Неверный формат email"
+    
+    return True, ""
 
-def validate_password(password: str) -> bool:
+def validate_password(password: str) -> tuple[bool, str]:
     """Проверяет валидность пароля"""
     if len(password) < 6:
-        return False
-    if len(password) > 100:
-        return False
-    return True
+        return False, "Пароль должен содержать минимум 6 символов"
+    if len(password) > 72:
+        return False, "Пароль слишком длинный (максимум 72 символа)"
+    return True, ""
 
 def generate_guest_username() -> str:
     """Генерирует уникальное имя для гостя"""
@@ -122,71 +132,15 @@ def generate_guest_username() -> str:
     
     adjective = random.choice(adjectives)
     noun = random.choice(nouns)
-    number = random.randint(100, 999)
+    number = random.randint(1000, 9999)
     
     return f"{adjective}{noun}{number}"
-
-def create_test_users(db: Session):
-    """Создает тестовых пользователей"""
-    test_users = [
-        {
-            "username": "user1",
-            "email": "user1@example.com",
-            "password": "password123",
-            "display_name": "👑 Основной аккаунт"
-        },
-        {
-            "username": "user2",
-            "email": "user2@example.com", 
-            "password": "password123",
-            "display_name": "🚀 Твинк аккаунт"
-        },
-        {
-            "username": "user3",
-            "email": "user3@example.com",
-            "password": "password123", 
-            "display_name": "💼 Рабочий"
-        },
-        {
-            "username": "admin",
-            "email": "admin@example.com",
-            "password": "admin123",
-            "display_name": "⚡ Администратор"
-        }
-    ]
-    
-    for user_data in test_users:
-        existing = db.query(User).filter(
-            (User.username == user_data["username"]) | (User.email == user_data["email"])
-        ).first()
-        
-        if not existing:
-            db_user = User(
-                username=user_data["username"],
-                email=user_data["email"],
-                display_name=user_data["display_name"],
-                password_hash=get_password_hash(user_data["password"]),
-                is_online=False,
-                is_guest=False
-            )
-            db.add(db_user)
-    
-    db.commit()
-    print("✅ Test users created/checked")
-
-# Создаем тестовых пользователей при запуске
-try:
-    db = SessionLocal()
-    create_test_users(db)
-    db.close()
-except Exception as e:
-    print(f"❌ Error creating test users: {e}")
 
 # ========== API ENDPOINTS ==========
 
 @app.get("/")
 async def root():
-    """Главная страница - перенаправляет на фронтенд"""
+    """Главная страница - перенаправляет на страницу авторизации"""
     return RedirectResponse("/index.html")
 
 @app.get("/api/health")
@@ -195,9 +149,10 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "DevNet Messenger API",
-        "version": "3.0.0",
+        "version": "4.0.0",
         "timestamp": datetime.utcnow().isoformat(),
-        "database": "connected"
+        "database": "connected",
+        "features": ["auth", "websocket", "groups", "file_upload"]
     }
 
 # ========== АУТЕНТИФИКАЦИЯ ==========
@@ -213,25 +168,28 @@ async def register_user(
 ):
     """Регистрация нового пользователя"""
     try:
-        print(f"🔧 Registration attempt: {username}")
+        print(f"🔧 Попытка регистрации: {username}")
         
         # Валидация данных
-        if not validate_username(username):
+        username_valid, username_error = validate_username(username)
+        if not username_valid:
             return JSONResponse(
                 status_code=400,
-                content={"detail": "Имя пользователя должно быть от 3 до 50 символов и содержать только буквы, цифры, точки, дефисы и подчеркивания"}
+                content={"success": False, "detail": username_error}
             )
         
-        if not validate_email(email):
+        email_valid, email_error = validate_email(email)
+        if not email_valid:
             return JSONResponse(
                 status_code=400,
-                content={"detail": "Неверный формат email"}
+                content={"success": False, "detail": email_error}
             )
         
-        if not validate_password(password):
+        password_valid, password_error = validate_password(password)
+        if not password_valid:
             return JSONResponse(
                 status_code=400,
-                content={"detail": "Пароль должен содержать минимум 6 символов"}
+                content={"success": False, "detail": password_error}
             )
         
         # Проверяем, существует ли пользователь
@@ -243,12 +201,12 @@ async def register_user(
             if existing_user.username == username:
                 return JSONResponse(
                     status_code=400,
-                    content={"detail": "Имя пользователя уже занято"}
+                    content={"success": False, "detail": "Имя пользователя уже занято"}
                 )
             else:
                 return JSONResponse(
                     status_code=400,
-                    content={"detail": "Email уже используется"}
+                    content={"success": False, "detail": "Email уже используется"}
                 )
         
         # Создаем нового пользователя
@@ -256,7 +214,7 @@ async def register_user(
             username=username,
             email=email,
             display_name=display_name or username,
-            password_hash=get_password_hash(password),
+            password_hash=get_password_hash(password),  # Используем безопасное хеширование
             is_online=False,
             is_guest=False,
             last_login=datetime.utcnow()
@@ -266,7 +224,7 @@ async def register_user(
         db.commit()
         db.refresh(db_user)
         
-        print(f"✅ User registered: {username}")
+        print(f"✅ Пользователь зарегистрирован: {username}")
         
         # Создаем токен
         access_token = create_access_token(
@@ -286,7 +244,6 @@ async def register_user(
                 "email": db_user.email,
                 "is_guest": db_user.is_guest
             },
-            "access_token": access_token,
             "message": "Регистрация успешна!"
         }
         
@@ -299,17 +256,18 @@ async def register_user(
             httponly=True,
             max_age=7 * 24 * 60 * 60,  # 7 дней
             secure=request.url.scheme == "https",
-            samesite="lax"
+            samesite="lax",
+            path="/"
         )
         
         return response
         
     except Exception as e:
-        print(f"❌ Registration error: {e}")
+        print(f"❌ Ошибка регистрации: {e}")
         db.rollback()
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Ошибка сервера: {str(e)}"}
+            content={"success": False, "detail": f"Ошибка сервера: {str(e)}"}
         )
 
 @app.post("/api/login")
@@ -321,26 +279,26 @@ async def login_user(
 ):
     """Вход пользователя"""
     try:
-        print(f"🔧 Login attempt: {username}")
+        print(f"🔧 Попытка входа: {username}")
         
-        # Ищем пользователя
+        # Ищем пользователя по username
         user = db.query(User).filter(User.username == username).first()
         
+        # Если не нашли по username, пробуем найти по email
         if not user:
-            # Пробуем найти по email
             user = db.query(User).filter(User.email == username).first()
         
         if not user:
             return JSONResponse(
                 status_code=401,
-                content={"detail": "Неверное имя пользователя или пароль"}
+                content={"success": False, "detail": "Неверное имя пользователя или пароль"}
             )
         
         # Проверяем пароль
         if not verify_password(password, user.password_hash):
             return JSONResponse(
                 status_code=401,
-                content={"detail": "Неверное имя пользователя или пароль"}
+                content={"success": False, "detail": "Неверное имя пользователя или пароль"}
             )
         
         # Обновляем время последнего входа
@@ -348,7 +306,7 @@ async def login_user(
         user.last_login = datetime.utcnow()
         db.commit()
         
-        print(f"✅ User logged in: {username}")
+        print(f"✅ Пользователь вошел: {username}")
         
         # Создаем токен
         access_token = create_access_token(
@@ -368,7 +326,6 @@ async def login_user(
                 "email": user.email,
                 "is_guest": user.is_guest
             },
-            "access_token": access_token,
             "message": "Вход выполнен успешно!"
         }
         
@@ -381,16 +338,17 @@ async def login_user(
             httponly=True,
             max_age=7 * 24 * 60 * 60,
             secure=request.url.scheme == "https",
-            samesite="lax"
+            samesite="lax",
+            path="/"
         )
         
         return response
         
     except Exception as e:
-        print(f"❌ Login error: {e}")
+        print(f"❌ Ошибка входа: {e}")
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Ошибка сервера: {str(e)}"}
+            content={"success": False, "detail": f"Ошибка сервера: {str(e)}"}
         )
 
 @app.post("/api/logout")
@@ -402,21 +360,22 @@ async def logout_user(request: Request, db: Session = Depends(get_db)):
             payload = verify_token(token)
             if payload:
                 user_id = payload.get("user_id")
-                user = db.query(User).filter(User.id == user_id).first()
-                if user:
-                    user.is_online = False
-                    db.commit()
-                    print(f"✅ User logged out: {user.username}")
+                if user_id:
+                    user = db.query(User).filter(User.id == user_id).first()
+                    if user:
+                        user.is_online = False
+                        db.commit()
+                        print(f"✅ Пользователь вышел: {user.username}")
         
         response = JSONResponse({"success": True, "message": "Выход выполнен успешно"})
-        response.delete_cookie("access_token")
+        response.delete_cookie("access_token", path="/")
         return response
         
     except Exception as e:
-        print(f"❌ Logout error: {e}")
+        print(f"❌ Ошибка выхода: {e}")
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Ошибка выхода: {str(e)}"}
+            content={"success": False, "detail": f"Ошибка выхода: {str(e)}"}
         )
 
 @app.post("/api/auto-login")
@@ -426,7 +385,7 @@ async def auto_login_user(
 ):
     """Автоматический вход/регистрация гостя"""
     try:
-        print("🔧 Auto-login attempt")
+        print("🔧 Попытка автоматического входа")
         
         # Проверяем существующий токен
         token = request.cookies.get("access_token")
@@ -434,18 +393,19 @@ async def auto_login_user(
             payload = verify_token(token)
             if payload:
                 user_id = payload.get("user_id")
-                user = db.query(User).filter(User.id == user_id).first()
-                if user:
-                    return JSONResponse({
-                        "success": True,
-                        "user": {
-                            "id": user.id,
-                            "username": user.username,
-                            "display_name": user.display_name,
-                            "is_guest": user.is_guest
-                        },
-                        "message": "Пользователь уже авторизован"
-                    })
+                if user_id:
+                    user = db.query(User).filter(User.id == user_id).first()
+                    if user:
+                        return JSONResponse({
+                            "success": True,
+                            "user": {
+                                "id": user.id,
+                                "username": user.username,
+                                "display_name": user.display_name,
+                                "is_guest": user.is_guest
+                            },
+                            "message": "Пользователь уже авторизован"
+                        })
         
         # Создаем гостевого пользователя
         username = generate_guest_username()
@@ -457,11 +417,14 @@ async def auto_login_user(
         if existing:
             username = f"{username}_{random.randint(100, 999)}"
         
+        # Создаем безопасный пароль для гостя
+        guest_password = str(uuid.uuid4())[:20]
+        
         db_user = User(
             username=username,
             email=email,
             display_name=display_name,
-            password_hash=get_password_hash(str(uuid.uuid4())),
+            password_hash=get_password_hash(guest_password),
             is_online=True,
             is_guest=True
         )
@@ -470,7 +433,7 @@ async def auto_login_user(
         db.commit()
         db.refresh(db_user)
         
-        print(f"✅ Guest user created: {username}")
+        print(f"✅ Гостевой пользователь создан: {username}")
         
         # Создаем токен
         access_token = create_access_token(
@@ -489,7 +452,6 @@ async def auto_login_user(
                 "display_name": db_user.display_name,
                 "is_guest": db_user.is_guest
             },
-            "access_token": access_token,
             "message": "Гостевой аккаунт создан"
         }
         
@@ -502,17 +464,18 @@ async def auto_login_user(
             httponly=True,
             max_age=7 * 24 * 60 * 60,
             secure=request.url.scheme == "https",
-            samesite="lax"
+            samesite="lax",
+            path="/"
         )
         
         return response
         
     except Exception as e:
-        print(f"❌ Auto-login error: {e}")
+        print(f"❌ Ошибка автоматического входа: {e}")
         db.rollback()
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Ошибка создания аккаунта: {str(e)}"}
+            content={"success": False, "detail": f"Ошибка создания аккаунта: {str(e)}"}
         )
 
 @app.get("/api/me")
@@ -524,17 +487,35 @@ async def get_current_user_info(
     try:
         token = request.cookies.get("access_token")
         if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+            raise HTTPException(
+                status_code=401, 
+                detail="Требуется аутентификация",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
         
         payload = verify_token(token)
         if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
+            raise HTTPException(
+                status_code=401, 
+                detail="Недействительный токен",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
         
         user_id = payload.get("user_id")
+        if not user_id:
+            raise HTTPException(
+                status_code=401, 
+                detail="Неверный токен",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+        
         user = db.query(User).filter(User.id == user_id).first()
         
         if not user:
-            raise HTTPException(status_code=404, detail="Пользователь не найден")
+            raise HTTPException(
+                status_code=404, 
+                detail="Пользователь не найден"
+            )
         
         return {
             "success": True,
@@ -553,7 +534,10 @@ async def get_current_user_info(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Ошибка сервера: {str(e)}"
+        )
 
 # ========== ПОЛЬЗОВАТЕЛИ ==========
 
@@ -567,11 +551,19 @@ async def get_all_users(
         # Проверяем авторизацию
         token = request.cookies.get("access_token")
         if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+            raise HTTPException(
+                status_code=401, 
+                detail="Требуется аутентификация",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
         
         payload = verify_token(token)
         if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
+            raise HTTPException(
+                status_code=401, 
+                detail="Недействительный токен",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
         
         current_user_id = payload.get("user_id")
         users = db.query(User).filter(User.id != current_user_id).all()
@@ -595,7 +587,10 @@ async def get_all_users(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Ошибка сервера: {str(e)}"
+        )
 
 # ========== ГРУППЫ ==========
 
@@ -611,11 +606,17 @@ async def create_group(
         # Проверяем авторизацию
         token = request.cookies.get("access_token") if request else None
         if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+            raise HTTPException(
+                status_code=401, 
+                detail="Требуется аутентификация"
+            )
         
         payload = verify_token(token)
         if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
+            raise HTTPException(
+                status_code=401, 
+                detail="Недействительный токен"
+            )
         
         user_id = payload.get("user_id")
         
@@ -654,7 +655,7 @@ async def create_group(
         db.rollback()
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Ошибка создания группы: {str(e)}"}
+            content={"success": False, "detail": f"Ошибка создания группы: {str(e)}"}
         )
 
 @app.get("/api/groups")
@@ -666,11 +667,17 @@ async def get_groups(
     try:
         token = request.cookies.get("access_token")
         if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+            raise HTTPException(
+                status_code=401, 
+                detail="Требуется аутентификация"
+            )
         
         payload = verify_token(token)
         if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
+            raise HTTPException(
+                status_code=401, 
+                detail="Недействительный токен"
+            )
         
         user_id = payload.get("user_id")
         
@@ -697,7 +704,7 @@ async def get_groups(
     except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Ошибка загрузки групп: {str(e)}"}
+            content={"success": False, "detail": f"Ошибка загрузки групп: {str(e)}"}
         )
 
 # ========== СООБЩЕНИЯ ==========
@@ -744,11 +751,17 @@ async def get_all_chats(
     try:
         token = request.cookies.get("access_token")
         if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+            raise HTTPException(
+                status_code=401, 
+                detail="Требуется аутентификация"
+            )
         
         payload = verify_token(token)
         if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
+            raise HTTPException(
+                status_code=401, 
+                detail="Недействительный токен"
+            )
         
         current_user_id = payload.get("user_id")
         
@@ -814,7 +827,7 @@ async def get_all_chats(
     except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Ошибка загрузки чатов: {str(e)}"}
+            content={"success": False, "detail": f"Ошибка загрузки чатов: {str(e)}"}
         )
 
 # ========== ФАЙЛЫ ==========
@@ -830,17 +843,23 @@ async def upload_file(
         # Проверяем авторизацию
         token = request.cookies.get("access_token") if request else None
         if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+            raise HTTPException(
+                status_code=401, 
+                detail="Требуется аутентификация"
+            )
         
         payload = verify_token(token)
         if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
+            raise HTTPException(
+                status_code=401, 
+                detail="Недействительный токен"
+            )
         
         user_id = payload.get("user_id")
         
         # Определяем тип файла
         file_type = "file"
-        if file.content_type.startswith("image/"):
+        if file.content_type and file.content_type.startswith("image/"):
             file_type = "image"
         
         # Проверяем размер (максимум 10MB)
@@ -852,12 +871,17 @@ async def upload_file(
         if file_size > MAX_SIZE:
             return JSONResponse(
                 status_code=400,
-                content={"detail": "Файл слишком большой (максимум 10MB)"}
+                content={"success": False, "detail": "Файл слишком большой (максимум 10MB)"}
             )
         
         # Генерируем уникальное имя
-        file_extension = file.filename.split('.')[-1] if '.' in file.filename else ''
-        unique_filename = f"{uuid.uuid4()}.{file_extension}"
+        file_extension = ""
+        if '.' in file.filename:
+            file_extension = file.filename.split('.')[-1]
+        
+        unique_filename = f"{uuid.uuid4()}"
+        if file_extension:
+            unique_filename += f".{file_extension}"
         
         # Сохраняем файл
         save_dir = UPLOAD_DIR / f"{file_type}s"
@@ -895,7 +919,7 @@ async def upload_file(
     except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Ошибка загрузки файла: {str(e)}"}
+            content={"success": False, "detail": f"Ошибка загрузки файла: {str(e)}"}
         )
 
 # ========== WEB SOCKET ==========
@@ -923,7 +947,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
             message_data = json.loads(data)
             message_type = message_data.get("type", "message")
             
-            print(f"📨 WebSocket message from {user_id}: {message_type}")
+            print(f"📨 WebSocket сообщение от {user_id}: {message_type}")
             
             if message_type == "message":
                 await handle_text_message(message_data, user_id)
@@ -935,7 +959,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
                 await handle_group_message(message_data, user_id)
                 
     except WebSocketDisconnect:
-        print(f"📴 User {user_id} disconnected")
+        print(f"📴 Пользователь отключился: {user_id}")
         
         # Обновляем статус
         db = SessionLocal()
@@ -1016,7 +1040,7 @@ async def handle_text_message(message_data: dict, sender_id: int):
         
     except Exception as e:
         db.rollback()
-        print(f"❌ Error handling text message: {e}")
+        print(f"❌ Ошибка обработки текстового сообщения: {e}")
     finally:
         db.close()
 
@@ -1136,9 +1160,10 @@ async def serve_chat():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    print(f"🚀 Starting DevNet Messenger API on port {port}")
-    print(f"📁 Upload directory: {UPLOAD_DIR}")
-    print(f"📁 Frontend directory: {frontend_dir}")
+    print(f"🚀 Запуск DevNet Messenger API на порту {port}")
+    print(f"📁 Директория загрузок: {UPLOAD_DIR}")
+    print(f"📁 Директория фронтенда: {frontend_dir}")
+    print(f"📱 Документация API: http://localhost:{port}/api/docs")
     
     uvicorn.run(
         "main:app",
