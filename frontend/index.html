@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DevNet Messenger - Социальная сеть для разработчиков</title>
+    <title>DevNet Messenger - Современный мессенджер</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * {
@@ -374,50 +374,38 @@
             display: none;
         }
         
-        .demo-users {
+        .features {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 2rem;
             margin-top: 2rem;
+        }
+        
+        .feature {
             padding: 1.5rem;
             background: rgba(255,255,255,0.03);
             border-radius: 12px;
             border: 1px solid var(--border);
-        }
-        
-        .demo-users h3 {
-            margin-bottom: 1rem;
-            color: var(--text-primary);
-            font-size: 1.1rem;
-        }
-        
-        .demo-user-list {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 0.8rem;
-        }
-        
-        .demo-user {
-            padding: 0.8rem;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.3s ease;
             text-align: center;
         }
         
-        .demo-user:hover {
-            background: rgba(16, 163, 127, 0.1);
-            border-color: var(--primary);
-            transform: translateY(-2px);
+        .feature-icon {
+            font-size: 2rem;
+            margin-bottom: 1rem;
+            background: var(--gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
         }
         
-        .demo-username {
-            font-weight: 600;
-            margin-bottom: 0.3rem;
+        .feature h3 {
+            margin-bottom: 0.5rem;
+            font-size: 1.1rem;
         }
         
-        .demo-password {
-            font-size: 0.8rem;
-            color: var(--text-muted);
+        .feature p {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
         }
         
         .demo-links {
@@ -462,7 +450,7 @@
                 font-size: 1.1rem;
             }
             
-            .demo-user-list {
+            .features {
                 grid-template-columns: 1fr;
             }
             
@@ -528,7 +516,8 @@
                     <div class="form-group">
                         <label>Имя пользователя</label>
                         <input type="text" name="username" placeholder="username" required 
-                               minlength="3" maxlength="50">
+                               minlength="3" maxlength="50" pattern="[a-zA-Z0-9_.-]+"
+                               title="Только буквы, цифры, точки, дефисы и подчеркивания">
                         <div class="error-message" id="usernameError"></div>
                     </div>
                     
@@ -541,8 +530,8 @@
                     <div class="form-group">
                         <label>Пароль</label>
                         <input type="password" name="password" placeholder="Минимум 6 символов" required
-                               minlength="6" maxlength="20">
-                        <div class="password-hint">Пароль должен быть от 6 до 20 символов</div>
+                               minlength="6" maxlength="72">
+                        <div class="password-hint">Пароль должен быть от 6 до 72 символов</div>
                         <div class="error-message" id="passwordError"></div>
                     </div>
                     
@@ -564,8 +553,8 @@
                     <p class="auth-subtitle">Добро пожаловать обратно!</p>
                     
                     <div class="form-group">
-                        <label>Имя пользователя</label>
-                        <input type="text" name="username" placeholder="username" required>
+                        <label>Имя пользователя или Email</label>
+                        <input type="text" name="username" placeholder="username или user@example.com" required>
                         <div class="error-message" id="loginUsernameError"></div>
                     </div>
                     
@@ -582,26 +571,22 @@
                     <div class="success-message" id="loginSuccess"></div>
                 </form>
 
-                <!-- Демо пользователи -->
-                <div class="demo-users">
-                    <h3>👥 Тестовые аккаунты (для быстрого входа):</h3>
-                    <div class="demo-user-list">
-                        <div class="demo-user" onclick="fillDemoCredentials('user1', 'password123')">
-                            <div class="demo-username">user1</div>
-                            <div class="demo-password">password123</div>
-                        </div>
-                        <div class="demo-user" onclick="fillDemoCredentials('user2', 'password123')">
-                            <div class="demo-username">user2</div>
-                            <div class="demo-password">password123</div>
-                        </div>
-                        <div class="demo-user" onclick="fillDemoCredentials('user3', 'password123')">
-                            <div class="demo-username">user3</div>
-                            <div class="demo-password">password123</div>
-                        </div>
-                        <div class="demo-user" onclick="fillDemoCredentials('admin', 'admin123')">
-                            <div class="demo-username">admin</div>
-                            <div class="demo-password">admin123</div>
-                        </div>
+                <!-- Возможности -->
+                <div class="features">
+                    <div class="feature">
+                        <div class="feature-icon">⚡</div>
+                        <h3>Real-time чат</h3>
+                        <p>Мгновенная отправка сообщений через WebSocket</p>
+                    </div>
+                    <div class="feature">
+                        <div class="feature-icon">👥</div>
+                        <h3>Группы</h3>
+                        <p>Создавайте группы для общения с командой</p>
+                    </div>
+                    <div class="feature">
+                        <div class="feature-icon">🖼️</div>
+                        <h3>Файлы</h3>
+                        <p>Отправляйте изображения и документы</p>
                     </div>
                 </div>
 
@@ -634,22 +619,45 @@
             event.target.classList.add('active');
         }
 
-        // Заполнение демо credentials
-        function fillDemoCredentials(username, password) {
-            document.querySelector('#loginForm [name="username"]').value = username;
-            document.querySelector('#loginForm [name="password"]').value = password;
-            showAuthForm('login');
-        }
-
         // Валидация пароля на клиенте
         function validatePassword(password) {
             if (password.length < 6) {
-                return "Пароль должен содержать минимум 6 символов";
+                return { valid: false, message: "Пароль должен содержать минимум 6 символов" };
             }
-            if (password.length > 20) {
-                return "Пароль слишком длинный (максимум 20 символов)";
+            if (password.length > 72) {
+                return { valid: false, message: "Пароль слишком длинный (максимум 72 символа)" };
             }
-            return null;
+            return { valid: true, message: "" };
+        }
+
+        // Сброс ошибок формы
+        function resetFormErrors(formId) {
+            const form = document.getElementById(formId);
+            form.querySelectorAll('.error-message').forEach(error => {
+                error.style.display = 'none';
+                error.textContent = '';
+            });
+            form.querySelectorAll('input').forEach(input => {
+                input.classList.remove('error');
+            });
+            const successMsg = form.querySelector('.success-message');
+            if (successMsg) successMsg.style.display = 'none';
+        }
+
+        // Показать ошибку в поле
+        function showFieldError(fieldName, message, formPrefix = '') {
+            const errorElement = document.getElementById(`${formPrefix}${fieldName}Error`);
+            const inputElement = document.querySelector(`[name="${fieldName}"]`);
+            
+            if (errorElement) {
+                errorElement.textContent = message;
+                errorElement.style.display = 'block';
+            }
+            
+            if (inputElement) {
+                inputElement.classList.add('error');
+                inputElement.focus();
+            }
         }
 
         // Обработка формы регистрации
@@ -659,25 +667,15 @@
             const formData = new FormData(this);
             const password = formData.get('password');
             const resultDiv = document.getElementById('registerSuccess');
-            const errorDivs = ['usernameError', 'emailError', 'passwordError'];
             const registerBtn = document.getElementById('registerBtn');
             
-            // Скрыть ошибки и убрать красные рамки
-            errorDivs.forEach(id => {
-                const errorElement = document.getElementById(id);
-                errorElement.style.display = 'none';
-                const inputName = id.replace('Error', '');
-                const input = document.querySelector(`[name="${inputName}"]`);
-                if (input) input.classList.remove('error');
-            });
-            resultDiv.style.display = 'none';
+            // Сбрасываем ошибки
+            resetFormErrors('registerForm');
             
             // Валидация пароля на клиенте
-            const passwordError = validatePassword(password);
-            if (passwordError) {
-                document.getElementById('passwordError').textContent = passwordError;
-                document.getElementById('passwordError').style.display = 'block';
-                document.querySelector('[name="password"]').classList.add('error');
+            const passwordValidation = validatePassword(password);
+            if (!passwordValidation.valid) {
+                showFieldError('password', passwordValidation.message);
                 return;
             }
             
@@ -705,31 +703,24 @@
                         window.location.href = '/chat';
                     }, 2000);
                 } else {
-                    // Показываем ошибки
+                    // Определяем какое поле содержит ошибку
                     if (result.detail) {
-                        if (result.detail.includes('email')) {
-                            document.getElementById('emailError').textContent = result.detail;
-                            document.getElementById('emailError').style.display = 'block';
-                            document.querySelector('[name="email"]').classList.add('error');
-                        } else if (result.detail.includes('парол')) {
-                            document.getElementById('passwordError').textContent = result.detail;
-                            document.getElementById('passwordError').style.display = 'block';
-                            document.querySelector('[name="password"]').classList.add('error');
+                        const errorText = result.detail.toLowerCase();
+                        if (errorText.includes('email')) {
+                            showFieldError('email', result.detail);
+                        } else if (errorText.includes('парол') || errorText.includes('password')) {
+                            showFieldError('password', result.detail);
+                        } else if (errorText.includes('username') || errorText.includes('имя пользователя')) {
+                            showFieldError('username', result.detail);
                         } else {
-                            document.getElementById('usernameError').textContent = result.detail;
-                            document.getElementById('usernameError').style.display = 'block';
-                            document.querySelector('[name="username"]').classList.add('error');
+                            showFieldError('username', result.detail || 'Ошибка регистрации');
                         }
                     } else {
-                        document.getElementById('usernameError').textContent = 'Неизвестная ошибка сервера';
-                        document.getElementById('usernameError').style.display = 'block';
-                        document.querySelector('[name="username"]').classList.add('error');
+                        showFieldError('username', 'Неизвестная ошибка сервера');
                     }
                 }
             } catch (error) {
-                document.getElementById('usernameError').textContent = 'Ошибка сети: ' + error.message;
-                document.getElementById('usernameError').style.display = 'block';
-                document.querySelector('[name="username"]').classList.add('error');
+                showFieldError('username', 'Ошибка сети: ' + error.message);
             } finally {
                 // Разблокируем кнопку
                 registerBtn.disabled = false;
@@ -743,18 +734,10 @@
             
             const formData = new FormData(this);
             const resultDiv = document.getElementById('loginSuccess');
-            const errorDivs = ['loginUsernameError', 'loginPasswordError'];
             const loginBtn = document.getElementById('loginBtn');
             
-            // Скрыть ошибки
-            errorDivs.forEach(id => {
-                const errorElement = document.getElementById(id);
-                errorElement.style.display = 'none';
-                const inputName = id.replace('login', '').replace('Error', '');
-                const input = document.querySelector(`[name="${inputName}"]`);
-                if (input) input.classList.remove('error');
-            });
-            resultDiv.style.display = 'none';
+            // Сбрасываем ошибки
+            resetFormErrors('loginForm');
             
             // Блокируем кнопку
             loginBtn.disabled = true;
@@ -781,14 +764,10 @@
                         window.location.href = '/chat';
                     }, 2000);
                 } else {
-                    document.getElementById('loginUsernameError').textContent = result.detail || 'Неверное имя пользователя или пароль';
-                    document.getElementById('loginUsernameError').style.display = 'block';
-                    document.querySelector('[name="username"]').classList.add('error');
+                    showFieldError('username', result.detail || 'Неверное имя пользователя или пароль', 'login');
                 }
             } catch (error) {
-                document.getElementById('loginUsernameError').textContent = 'Ошибка сети: ' + error.message;
-                document.getElementById('loginUsernameError').style.display = 'block';
-                document.querySelector('[name="username"]').classList.add('error');
+                showFieldError('username', 'Ошибка сети: ' + error.message, 'login');
             } finally {
                 // Разблокируем кнопку
                 loginBtn.disabled = false;
