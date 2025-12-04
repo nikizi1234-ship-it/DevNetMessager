@@ -1,92 +1,134 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Form, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Form, Request, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, or_
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
 import uvicorn 
 import os
 import sys
+import shutil
+import uuid
+import random
 
 # Добавляем путь для импорта модулей
-sys.path.append('/app/BackEnd')
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
     from websocket_manager import manager
     from database import engine, SessionLocal, get_db
-    from models import Base, User, Message
+    from models import Base, User, Message, Group, GroupMember, File as FileModel
     from auth import create_access_token, verify_token, ACCESS_TOKEN_EXPIRE_MINUTES, verify_password, get_password_hash
+    print("✅ All modules imported successfully")
 except ImportError as e:
     print(f"❌ Import error: {e}")
-    print("📁 Current directory:", os.getcwd())
-    print("📁 Files in current directory:", os.listdir('.'))
-    print("📁 Files in BackEnd:", os.listdir('BackEnd') if os.path.exists('BackEnd') else "BackEnd not found")
     raise
 
-# Создаем таблицы
-try:
-    Base.metadata.create_all(bind=engine)
-    print("✅ Database tables created")
-except Exception as e:
-    print(f"❌ Error creating tables: {e}")
+# ========== ИНИЦИАЛИЗАЦИЯ ==========
 
-app = FastAPI(title="DevNet Messenger")
+# Создаем таблицы в базе данных
+Base.metadata.create_all(bind=engine)
 
-# CORS для фронтенда
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+app = FastAPI(
+    title="DevNet Messenger",
+    description="Современный мессенджер с поддержкой групп, изображений и WebSocket",
+    version="2.0.0"
 )
 
-# Получаем абсолютный путь к frontend
-current_dir = Path(__file__).parent
-frontend_dir = current_dir.parent / "frontend"
+# Настройка CORS для фронтенда
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Разрешаем все источники (для разработки)
+    allow_methods=["*"],  # Разрешаем все методы
+    allow_headers=["*"],  # Разрешаем все заголовки
+    allow_credentials=True,
+)
 
-print(f"📁 Current directory: {current_dir}")
+# Создаем директории для загрузок
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
+(UPLOAD_DIR / "images").mkdir(exist_ok=True)
+(UPLOAD_DIR / "files").mkdir(exist_ok=True)
+
+print(f"📁 Upload directories created at: {UPLOAD_DIR}")
+
+# Получаем абсолютный путь к фронтенду
+current_dir = Path(__file__).parent
+project_root = current_dir.parent
+frontend_dir = project_root / "frontend"
+
+print(f"📁 Project root: {project_root}")
 print(f"📁 Frontend directory: {frontend_dir}")
 
-# Проверяем существование frontend
+# Проверяем существование фронтенда
 if frontend_dir.exists():
-    print(f"✅ Frontend exists at: {frontend_dir}")
+    print(f"✅ Frontend found: {frontend_dir}")
     print(f"📁 Files in frontend: {os.listdir(frontend_dir)}")
+    
+    # Монтируем статические файлы
+    app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
+    print("✅ Static files mounted")
 else:
-    print(f"❌ Frontend NOT FOUND at: {frontend_dir}")
+    print(f"⚠️  Frontend not found at: {frontend_dir}")
 
-# Функция для создания тестовых пользователей при запуске
-def create_initial_users():
+# Монтируем директорию загрузок
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+# ========== ФУНКЦИИ ДЛЯ СОЗДАНИЯ ТЕСТОВЫХ ДАННЫХ ==========
+
+def create_initial_data():
+    """Создает тестовые данные при первом запуске"""
     db = SessionLocal()
     try:
         # Проверяем есть ли уже пользователи
         existing_users = db.query(User).count()
+        
         if existing_users == 0:
-            print("👥 Создаем тестовых пользователей...")
+            print("👥 Creating initial test users...")
             
             test_users = [
                 User(
                     username="user1",
                     email="user1@example.com",
-                    display_name="User One",
+                    display_name="Alice Johnson",
                     password_hash=get_password_hash("password123"),
-                    is_online=False
+                    is_online=False,
+                    is_guest=False
                 ),
                 User(
                     username="user2", 
                     email="user2@example.com",
-                    display_name="User Two", 
+                    display_name="Bob Smith", 
                     password_hash=get_password_hash("password123"),
-                    is_online=False
+                    is_online=False,
+                    is_guest=False
                 ),
                 User(
                     username="user3",
                     email="user3@example.com",
-                    display_name="User Three",
+                    display_name="Charlie Brown",
                     password_hash=get_password_hash("password123"),
-                    is_online=False
+                    is_online=False,
+                    is_guest=False
+                ),
+                User(
+                    username="eva",
+                    email="eva@example.com",
+                    display_name="Eva Davis",
+                    password_hash=get_password_hash("password123"),
+                    is_online=False,
+                    is_guest=False
+                ),
+                User(
+                    username="david",
+                    email="david@example.com",
+                    display_name="David Wilson",
+                    password_hash=get_password_hash("password123"),
+                    is_online=False,
+                    is_guest=False
                 )
             ]
             
@@ -94,20 +136,215 @@ def create_initial_users():
                 db.add(user)
             
             db.commit()
-            print("✅ Тестовые пользователи созданы!")
+            print("✅ Test users created successfully!")
+            
+            # Создаем тестовую группу
+            print("👥 Creating test group...")
+            
+            group = Group(
+                name="DevNet Team",
+                description="Команда разработчиков DevNet Messenger",
+                created_by=1
+            )
+            db.add(group)
+            db.commit()
+            db.refresh(group)
+            
+            # Добавляем пользователей в группу
+            for user_id in [1, 2, 3]:
+                group_member = GroupMember(
+                    group_id=group.id,
+                    user_id=user_id
+                )
+                db.add(group_member)
+            
+            db.commit()
+            print("✅ Test group created!")
+            
+            # Создаем тестовые сообщения
+            print("💬 Creating test messages...")
+            
+            test_messages = [
+                Message(
+                    from_user_id=1,
+                    to_user_id=2,
+                    content="Привет! Как дела?",
+                    message_type="text"
+                ),
+                Message(
+                    from_user_id=2,
+                    to_user_id=1,
+                    content="Привет! Все отлично, работаю над проектом.",
+                    message_type="text"
+                ),
+                Message(
+                    from_user_id=1,
+                    to_user_id=2,
+                    content="Супер! Какой проект?",
+                    message_type="text"
+                ),
+                Message(
+                    from_user_id=2,
+                    to_user_id=1,
+                    content="Разрабатываю мессенджер на FastAPI и WebSocket!",
+                    message_type="text"
+                )
+            ]
+            
+            for message in test_messages:
+                db.add(message)
+            
+            db.commit()
+            print("✅ Test messages created!")
+            
         else:
-            print(f"✅ В базе уже есть {existing_users} пользователей")
+            print(f"✅ Database already has {existing_users} users")
             
     except Exception as e:
-        print(f"❌ Ошибка создания пользователей: {e}")
+        print(f"❌ Error creating initial data: {e}")
         db.rollback()
     finally:
         db.close()
 
-# Создаем пользователей при запуске
-create_initial_users()
+# Создаем данные при запуске
+create_initial_data()
 
-# Регистрация пользователя
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+
+def get_current_user(request: Request, db: Session = Depends(get_db)):
+    """Получает текущего пользователя из токена"""
+    token = request.cookies.get("access_token")
+    if not token:
+        return None
+    
+    payload = verify_token(token)
+    if not payload:
+        return None
+    
+    user_id = payload.get("user_id")
+    user = db.query(User).filter(User.id == user_id).first()
+    return user
+
+def generate_guest_username() -> str:
+    """Генерирует уникальное имя для гостя"""
+    adjectives = ["Быстрый", "Умный", "Яркий", "Смелый", "Ловкий", "Храбрый", "Мудрый", "Сильный"]
+    nouns = ["Тигр", "Орел", "Волк", "Лев", "Медведь", "Сокол", "Ястреб", "Феникс"]
+    
+    adjective = random.choice(adjectives)
+    noun = random.choice(nouns)
+    number = random.randint(100, 999)
+    
+    return f"{adjective}_{noun}_{number}"
+
+# ========== API ENDPOINTS ==========
+
+# ========== АУТЕНТИФИКАЦИЯ ==========
+
+@app.post("/api/auto-login")
+async def auto_login(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """
+    Автоматически создает гостевой аккаунт или возвращает существующий
+    
+    Эта функция:
+    1. Проверяет, есть ли у пользователя валидный токен
+    2. Если есть - возвращает информацию о пользователе
+    3. Если нет - создает нового гостевого пользователя
+    4. Устанавливает токен в cookies
+    """
+    try:
+        print("🔧 Auto-login attempt")
+        
+        # Проверяем, есть ли уже валидный токен
+        token = request.cookies.get("access_token")
+        if token:
+            payload = verify_token(token)
+            if payload:
+                user_id = payload.get("user_id")
+                user = db.query(User).filter(User.id == user_id).first()
+                if user:
+                    print(f"✅ Returning existing user: {user.username}")
+                    return JSONResponse({
+                        "success": True,
+                        "user": {
+                            "id": user.id,
+                            "username": user.username,
+                            "display_name": user.display_name,
+                            "is_guest": user.is_guest
+                        },
+                        "message": "Пользователь уже авторизован"
+                    })
+        
+        # Создаем нового гостевого пользователя
+        username = generate_guest_username()
+        display_name = f"Гость {random.randint(1000, 9999)}"
+        email = f"{username}@guest.devnet.com"
+        
+        # Проверяем уникальность username
+        existing = db.query(User).filter(User.username == username).first()
+        if existing:
+            username = f"{username}_{random.randint(100, 999)}"
+        
+        user = User(
+            username=username,
+            email=email,
+            display_name=display_name,
+            password_hash=get_password_hash(str(uuid.uuid4())),  # Случайный пароль
+            is_online=True,
+            is_guest=True  # Помечаем как гостя
+        )
+        
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        
+        print(f"✅ New guest user created: {user.username}")
+        
+        # Создаем токен на 7 дней
+        access_token_expires = timedelta(days=7)
+        access_token = create_access_token(
+            data={
+                "sub": user.username,
+                "user_id": user.id,
+                "is_guest": True,
+                "exp": datetime.utcnow() + access_token_expires
+            }
+        )
+        
+        response_data = {
+            "success": True,
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "display_name": user.display_name,
+                "is_guest": user.is_guest
+            },
+            "message": "Гостевой аккаунт создан"
+        }
+        
+        response = JSONResponse(response_data)
+        
+        # Устанавливаем токен в cookie
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,  # Защита от XSS
+            max_age=7 * 24 * 60 * 60,  # 7 дней
+            secure=request.url.scheme == "https",  # Только HTTPS в production
+            samesite="lax"  # Защита от CSRF
+        )
+        
+        return response
+        
+    except Exception as e:
+        print(f"❌ Auto-login error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Ошибка создания аккаунта: {str(e)}"}
+        )
+
 @app.post("/api/register")
 async def register(
     request: Request,
@@ -117,8 +354,9 @@ async def register(
     display_name: str = Form(None),
     db: Session = Depends(get_db)
 ):
+    """Регистрация нового пользователя"""
     try:
-        print(f"🔧 Регистрация пользователя: {username}")
+        print(f"🔧 Registration attempt: {username}")
         
         # Проверяем, существует ли пользователь
         existing_user = db.query(User).filter(
@@ -137,7 +375,8 @@ async def register(
             email=email,
             display_name=display_name or username,
             password_hash=get_password_hash(password),
-            is_online=False
+            is_online=False,
+            is_guest=False  # Полноценный пользователь
         )
         
         db.add(db_user)
@@ -147,15 +386,20 @@ async def register(
         # Создаем токен
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
-            data={"sub": db_user.username, "user_id": db_user.id}, expires_delta=access_token_expires
+            data={"sub": db_user.username, "user_id": db_user.id, "is_guest": False},
+            expires_delta=access_token_expires
         )
         
-        print(f"✅ Пользователь {username} успешно зарегистрирован!")
+        print(f"✅ User {username} registered successfully!")
         
         response = JSONResponse({
             "success": True,
-            "user_id": db_user.id,
-            "username": db_user.username,
+            "user": {
+                "id": db_user.id,
+                "username": db_user.username,
+                "display_name": db_user.display_name,
+                "is_guest": db_user.is_guest
+            },
             "message": "Регистрация успешна!"
         })
         
@@ -172,13 +416,12 @@ async def register(
         return response
         
     except Exception as e:
-        print(f"❌ Ошибка регистрации: {e}")
+        print(f"❌ Registration error: {e}")
         return JSONResponse(
             status_code=500,
             content={"detail": f"Ошибка сервера: {str(e)}"}
         )
 
-# Авторизация пользователя
 @app.post("/api/login")
 async def login(
     request: Request,
@@ -186,8 +429,9 @@ async def login(
     password: str = Form(...),
     db: Session = Depends(get_db)
 ):
+    """Вход существующего пользователя"""
     try:
-        print(f"🔧 Попытка входа: {username}")
+        print(f"🔧 Login attempt: {username}")
         
         user = db.query(User).filter(User.username == username).first()
         
@@ -200,20 +444,26 @@ async def login(
         # Обновляем время последнего входа
         user.last_login = datetime.utcnow()
         user.is_online = True
+        user.is_guest = False  # Превращаем гостя в полноценного пользователя
         db.commit()
         
         # Создаем токен
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
-            data={"sub": user.username, "user_id": user.id}, expires_delta=access_token_expires
+            data={"sub": user.username, "user_id": user.id, "is_guest": False},
+            expires_delta=access_token_expires
         )
         
-        print(f"✅ Пользователь {username} вошел в систему!")
+        print(f"✅ User {username} logged in!")
         
         response = JSONResponse({
             "success": True,
-            "user_id": user.id,
-            "username": user.username,
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "display_name": user.display_name,
+                "is_guest": user.is_guest
+            },
             "message": "Вход выполнен успешно!"
         })
         
@@ -230,15 +480,15 @@ async def login(
         return response
         
     except Exception as e:
-        print(f"❌ Ошибка входа: {e}")
+        print(f"❌ Login error: {e}")
         return JSONResponse(
             status_code=500,
             content={"detail": f"Ошибка сервера: {str(e)}"}
         )
 
-# Выход пользователя
 @app.post("/api/logout")
 async def logout(request: Request, db: Session = Depends(get_db)):
+    """Выход пользователя"""
     try:
         token = request.cookies.get("access_token")
         if token:
@@ -249,22 +499,25 @@ async def logout(request: Request, db: Session = Depends(get_db)):
                 if user:
                     user.is_online = False
                     db.commit()
-                    print(f"✅ Пользователь {user.username} вышел из системы")
+                    print(f"✅ User {user.username} logged out")
         
         response = JSONResponse({"success": True, "message": "Выход выполнен успешно"})
         response.delete_cookie("access_token")
         return response
         
     except Exception as e:
-        print(f"❌ Ошибка выхода: {e}")
+        print(f"❌ Logout error: {e}")
         return JSONResponse(
             status_code=500,
             content={"detail": f"Ошибка выхода: {str(e)}"}
         )
 
-# Получение информации о текущем пользователе
 @app.get("/api/me")
-async def get_current_user_info(request: Request, db: Session = Depends(get_db)):
+async def get_current_user_info(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """Получение информации о текущем пользователе"""
     try:
         token = request.cookies.get("access_token")
         if not token:
@@ -286,6 +539,7 @@ async def get_current_user_info(request: Request, db: Session = Depends(get_db))
             "email": user.email,
             "display_name": user.display_name,
             "is_online": user.is_online or False,
+            "is_guest": user.is_guest or False,
             "last_login": user.last_login.isoformat() if user.last_login else None,
             "created_at": user.created_at.isoformat() if user.created_at else None
         }
@@ -295,47 +549,14 @@ async def get_current_user_info(request: Request, db: Session = Depends(get_db))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
 
-# Простой тест регистрации через GET
-@app.get("/api/test_register")
-async def test_register(db: Session = Depends(get_db)):
-    try:
-        # Создаем дополнительных тестовых пользователей
-        test_users = [
-            User(
-                username="testuser",
-                email="test@example.com",
-                display_name="Test User",
-                password_hash=get_password_hash("test123"),
-                is_online=False
-            ),
-            User(
-                username="developer",
-                email="dev@example.com", 
-                display_name="Developer",
-                password_hash=get_password_hash("dev123"),
-                is_online=False
-            )
-        ]
-        
-        for user in test_users:
-            # Проверяем нет ли уже такого пользователя
-            existing = db.query(User).filter(User.username == user.username).first()
-            if not existing:
-                db.add(user)
-        
-        db.commit()
-        
-        return {
-            "success": True,
-            "message": "Тестовые пользователи созданы! Пароли: test123 / dev123"
-        }
-        
-    except Exception as e:
-        return {"error": str(e)}
+# ========== ПОЛЬЗОВАТЕЛИ ==========
 
-# Получение всех пользователей
 @app.get("/api/users")
-async def get_all_users(request: Request, db: Session = Depends(get_db)):
+async def get_all_users(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """Получение списка всех пользователей"""
     try:
         token = request.cookies.get("access_token")
         if not token:
@@ -358,6 +579,7 @@ async def get_all_users(request: Request, db: Session = Depends(get_db)):
                     "email": user.email,
                     "display_name": user.display_name,
                     "is_online": user.is_online or False,
+                    "is_guest": user.is_guest or False,
                     "last_login": user.last_login.isoformat() if user.last_login else None,
                     "created_at": user.created_at.isoformat() if user.created_at else None
                 }
@@ -370,9 +592,74 @@ async def get_all_users(request: Request, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
 
-# Получение информации о конкретном пользователе
-@app.get("/api/users/{user_id}")
-async def get_user(user_id: int, request: Request, db: Session = Depends(get_db)):
+# ========== ГРУППЫ ==========
+
+@app.post("/api/groups")
+async def create_group(
+    name: str = Form(...),
+    description: str = Form(None),
+    request: Request = None,
+    db: Session = Depends(get_db)
+):
+    """Создание новой группы"""
+    try:
+        # Проверяем авторизацию
+        token = request.cookies.get("access_token") if request else None
+        if not token:
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Недействительный токен")
+        
+        user_id = payload.get("user_id")
+        
+        print(f"🔧 Creating group '{name}' by user {user_id}")
+        
+        # Создаем группу
+        group = Group(
+            name=name,
+            description=description,
+            created_by=user_id
+        )
+        
+        db.add(group)
+        db.commit()
+        db.refresh(group)
+        
+        # Добавляем создателя в группу
+        group_member = GroupMember(
+            group_id=group.id,
+            user_id=user_id
+        )
+        db.add(group_member)
+        db.commit()
+        
+        return {
+            "success": True,
+            "group": {
+                "id": group.id,
+                "name": group.name,
+                "description": group.description,
+                "created_by": group.created_by,
+                "created_at": group.created_at.isoformat() if group.created_at else None
+            },
+            "message": "Группа создана успешно"
+        }
+        
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Ошибка создания группы: {str(e)}"}
+        )
+
+@app.get("/api/groups")
+async def get_groups(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """Получение списка групп пользователя"""
     try:
         token = request.cookies.get("access_token")
         if not token:
@@ -382,318 +669,64 @@ async def get_user(user_id: int, request: Request, db: Session = Depends(get_db)
         if not payload:
             raise HTTPException(status_code=401, detail="Недействительный токен")
         
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            return JSONResponse(
-                status_code=404,
-                content={"detail": "Пользователь не найден"}
-            )
+        user_id = payload.get("user_id")
         
-        return {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "display_name": user.display_name,
-            "is_online": user.is_online or False,
-            "last_login": user.last_login.isoformat() if user.last_login else None,
-            "created_at": user.created_at.isoformat() if user.created_at else None
-        }
+        # Получаем группы, в которых состоит пользователь
+        groups = db.query(Group).join(GroupMember).filter(GroupMember.user_id == user_id).all()
         
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
-
-# WebSocket endpoint
-@app.websocket("/ws/{user_id}")
-async def websocket_endpoint(websocket: WebSocket, user_id: int):
-    await manager.connect(websocket, user_id)
-    
-    # Обновляем статус пользователя как онлайн
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.id == user_id).first()
-        if user:
-            user.is_online = True
-            user.last_login = datetime.utcnow()
-            db.commit()
-            print(f"✅ Пользователь {user.username} подключен (ID: {user_id})")
-    except Exception as e:
-        print(f"❌ Ошибка обновления статуса: {e}")
-    finally:
-        db.close()
-    
-    try:
-        while True:
-            data = await websocket.receive_text()
-            message_data = json.loads(data)
+        groups_data = []
+        for group in groups:
+            # Получаем количество участников
+            members_count = db.query(GroupMember).filter(GroupMember.group_id == group.id).count()
             
-            # Сохраняем в базу данных
-            db = SessionLocal()
-            try:
-                # Проверяем существует ли получатель
-                receiver = db.query(User).filter(User.id == message_data["to_user_id"]).first()
-                if not receiver:
-                    await websocket.send_text(json.dumps({
-                        "type": "error",
-                        "message": "Пользователь не найден"
-                    }))
-                    continue
-                
-                db_message = Message(
-                    from_user_id=user_id,
-                    to_user_id=message_data["to_user_id"],
-                    content=message_data["content"],
-                    message_type=message_data.get("type", "text")
-                )
-                db.add(db_message)
-                db.commit()
-                db.refresh(db_message)
-                
-                # Отправляем получателю если он онлайн
-                await manager.send_personal_message(
-                    json.dumps({
-                        "type": "message",
-                        "id": db_message.id,
-                        "from_user_id": user_id,
-                        "to_user_id": message_data["to_user_id"],
-                        "content": message_data["content"],
-                        "timestamp": db_message.created_at.isoformat()
-                    }),
-                    message_data["to_user_id"]
-                )
-                
-                # Подтверждение отправки отправителю
-                await websocket.send_text(json.dumps({
-                    "type": "message_sent",
-                    "id": db_message.id,
-                    "to_user_id": message_data["to_user_id"],
-                    "timestamp": db_message.created_at.isoformat()
-                }))
-                
-            except Exception as e:
-                db.rollback()
-                print(f"❌ Database error: {e}")
-                await websocket.send_text(json.dumps({
-                    "type": "error",
-                    "message": f"Ошибка отправки: {str(e)}"
-                }))
-            finally:
-                db.close()
-                
-    except WebSocketDisconnect:
-        # Обновляем статус пользователя как офлайн при отключении
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.id == user_id).first()
-            if user:
-                user.is_online = False
-                db.commit()
-                print(f"✅ Пользователь {user.username} отключен (ID: {user_id})")
-        except Exception as e:
-            print(f"❌ Ошибка обновления статуса: {e}")
-        finally:
-            db.close()
+            # Получаем последнее сообщение в группе
+            last_message = db.query(Message).filter(Message.group_id == group.id)\
+                .order_by(Message.created_at.desc()).first()
+            
+            groups_data.append({
+                "id": group.id,
+                "name": group.name,
+                "description": group.description,
+                "created_by": group.created_by,
+                "created_at": group.created_at.isoformat() if group.created_at else None,
+                "members_count": members_count,
+                "last_message": {
+                    "content": last_message.content if last_message else None,
+                    "timestamp": last_message.created_at.isoformat() if last_message else None
+                } if last_message else None
+            })
         
-        manager.disconnect(user_id)
-
-# API для получения истории сообщений
-@app.get("/api/messages/{user_id}/{other_user_id}")
-async def get_message_history(user_id: int, other_user_id: int, db: Session = Depends(get_db)):
-    try:
-        messages = db.query(Message).filter(
-            ((Message.from_user_id == user_id) & (Message.to_user_id == other_user_id)) |
-            ((Message.from_user_id == other_user_id) & (Message.to_user_id == user_id))
-        ).order_by(Message.created_at.asc()).all()
-        
-        print(f"📨 Загружено {len(messages)} сообщений между пользователями {user_id} и {other_user_id}")
-        
-        return [
-            {
-                "id": msg.id,
-                "from_user_id": msg.from_user_id,
-                "to_user_id": msg.to_user_id,
-                "content": msg.content,
-                "type": msg.message_type,
-                "timestamp": msg.created_at.isoformat(),
-                "is_my_message": msg.from_user_id == user_id
-            }
-            for msg in messages
-        ]
+        return {
+            "groups": groups_data,
+            "total_groups": len(groups_data)
+        }
         
     except Exception as e:
-        print(f"❌ Ошибка загрузки сообщений: {e}")
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Ошибка загрузки истории сообщений: {str(e)}"}
+            content={"detail": f"Ошибка загрузки групп: {str(e)}"}
         )
 
-# API для удаления истории чата (только для меня)
-@app.delete("/api/messages/for-me/{user_id}/{other_user_id}")
-async def delete_chat_history_for_me(
-    user_id: int, 
-    other_user_id: int, 
+@app.get("/api/chats")
+async def get_all_chats(
+    request: Request,
     db: Session = Depends(get_db)
 ):
+    """Получение всех чатов пользователя (личные + группы)"""
     try:
-        print(f"🗑️ Удаление истории чата для пользователя {user_id} с {other_user_id}")
+        token = request.cookies.get("access_token")
+        if not token:
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
         
-        # Удаляем только сообщения, где текущий пользователь является отправителем
-        deleted_count = db.query(Message).filter(
-            (Message.from_user_id == user_id) & (Message.to_user_id == other_user_id)
-        ).delete()
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Недействительный токен")
         
-        db.commit()
+        current_user_id = payload.get("user_id")
         
-        print(f"✅ Удалено {deleted_count} сообщений (только для меня)")
+        # Получаем личные чаты (пользователи, с которыми есть переписка)
+        users_with_messages = db.query(User).filter(User.id != current_user_id).all()
+        private_chats = []
         
-        return {
-            "success": True,
-            "deleted_count": deleted_count,
-            "deleted_for": "me",
-            "message": f"История чата удалена для вас ({deleted_count} сообщений)"
-        }
-        
-    except Exception as e:
-        db.rollback()
-        print(f"❌ Ошибка удаления чата: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"Ошибка удаления чата: {str(e)}"}
-        )
-
-# API для удаления истории чата (для всех)
-@app.delete("/api/messages/for-all/{user_id}/{other_user_id}")
-async def delete_chat_history_for_all(
-    user_id: int, 
-    other_user_id: int, 
-    db: Session = Depends(get_db)
-):
-    try:
-        print(f"🗑️ Удаление истории чата для всех между {user_id} и {other_user_id}")
-        
-        # Удаляем все сообщения между пользователями
-        deleted_count = db.query(Message).filter(
-            ((Message.from_user_id == user_id) & (Message.to_user_id == other_user_id)) |
-            ((Message.from_user_id == other_user_id) & (Message.to_user_id == user_id))
-        ).delete()
-        
-        db.commit()
-        
-        print(f"✅ Удалено {deleted_count} сообщений (для всех)")
-        
-        # Отправляем уведомление другому пользователю через WebSocket если он онлайн
-        await manager.send_personal_message(
-            json.dumps({
-                "type": "chat_deleted",
-                "deleted_by": user_id,
-                "message": "История чата была удалена"
-            }),
-            other_user_id
-        )
-        
-        return {
-            "success": True,
-            "deleted_count": deleted_count,
-            "deleted_for": "all",
-            "message": f"История чата удалена для всех участников ({deleted_count} сообщений)"
-        }
-        
-    except Exception as e:
-        db.rollback()
-        print(f"❌ Ошибка удаления чата: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"Ошибка удаления чата: {str(e)}"}
-        )
-
-# API для удаления одного сообщения
-@app.delete("/api/message/{message_id}")
-async def delete_message(message_id: int, db: Session = Depends(get_db)):
-    try:
-        message_id = int(message_id)
-        message = db.query(Message).filter(Message.id == message_id).first()
-        if not message:
-            return JSONResponse(
-                status_code=404,
-                content={"detail": "Сообщение не найдено"}
-            )
-        
-        db.delete(message)
-        db.commit()
-        
-        return {
-            "success": True,
-            "message": "Сообщение удалено"
-        }
-        
-    except ValueError:
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Неверный ID сообщения"}
-        )
-    except Exception as e:
-        db.rollback()
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"Ошибка удаления сообщения: {str(e)}"}
-        )
-
-# Основные маршруты для фронтенда
-@app.get("/")
-async def serve_frontend():
-    if frontend_dir.exists() and (frontend_dir / "index.html").exists():
-        print(f"✅ Serving index.html from {frontend_dir / 'index.html'}")
-        return FileResponse(str(frontend_dir / "index.html"))
-    elif frontend_dir.exists() and (frontend_dir / "chat.html").exists():
-        print(f"✅ Serving chat.html from {frontend_dir / 'chat.html'}")
-        return FileResponse(str(frontend_dir / "chat.html"))
-    else:
-        print(f"❌ No frontend files found in {frontend_dir}")
-        return {"message": "DevNet Messenger API", "frontend": "not_found"}
-
-@app.get("/chat")
-async def serve_chat():
-    if frontend_dir.exists() and (frontend_dir / "chat.html").exists():
-        print(f"✅ Serving chat.html from {frontend_dir / 'chat.html'}")
-        return FileResponse(str(frontend_dir / "chat.html"))
-    else:
-        print(f"❌ chat.html not found in {frontend_dir}")
-        return {"message": "Chat interface not found"}
-
-# Статические файлы фронтенда
-if frontend_dir.exists():
-    app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
-    print("✅ Static files mounted successfully")
-else:
-    print("❌ Frontend directory not found, static files not mounted")
-
-# Health check endpoint
-@app.get("/health")
-async def health_check():
-    return {
-        "status": "healthy", 
-        "service": "DevNet Messenger",
-        "timestamp": datetime.utcnow().isoformat(),
-        "frontend_exists": frontend_dir.exists()
-    }
-
-# Проверка API
-@app.get("/api/test")
-async def api_test():
-    return {
-        "status": "ok",
-        "message": "API is working",
-        "timestamp": datetime.utcnow().isoformat()
-    }
-
-# Для запуска на Railway
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    print(f"🚀 Starting server on port {port}")
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=port,
-        reload=False
-    )
+        for user in users_with_messages:
+            # Проверяем, есть ли
