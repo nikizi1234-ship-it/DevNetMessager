@@ -500,7 +500,7 @@
                 <li><a onclick="scrollToSection('home')">Главная</a></li>
                 <li><a onclick="scrollToSection('auth')">Войти</a></li>
                 <li><a href="/chat">Чат</a></li>
-                <li><a href="/docs">API</a></li>
+                <li><a href="/api/docs">API</a></li>
             </ul>
         </nav>
     </header>
@@ -608,7 +608,7 @@
                 <div class="demo-links">
                     <a href="/chat" class="demo-link">Перейти в чат</a>
                     <a href="/api/users" class="demo-link">Все пользователи</a>
-                    <a href="/docs" class="demo-link">API Docs</a>
+                    <a href="/api/docs" class="demo-link">API Docs</a>
                 </div>
             </div>
         </div>
@@ -693,18 +693,16 @@
                 
                 const result = await response.json();
                 
-                if (response.ok) {
-                    resultDiv.innerHTML = `✅ Регистрация успешна! Добро пожаловать, ${result.username}!<br>Перенаправление в чат...`;
+                if (response.ok && result.success) {
+                    // Форматируем отображаемое имя для приветствия
+                    let welcomeName = result.user.display_name || result.user.username;
+                    resultDiv.innerHTML = `✅ Регистрация успешна! Добро пожаловать, ${welcomeName}!<br>Перенаправление в чат...`;
                     resultDiv.style.display = 'block';
                     
-                    // Сохраняем токен в localStorage
-                    localStorage.setItem('token', result.access_token);
-                    localStorage.setItem('user_id', result.user_id);
-                    localStorage.setItem('username', result.username);
-                    
+                    // Автоматическая авторизация - токен уже в cookies
                     // Перенаправляем в чат через 2 секунды
                     setTimeout(() => {
-                        window.location.href = `/chat?user_id=${result.user_id}`;
+                        window.location.href = '/chat';
                     }, 2000);
                 } else {
                     // Показываем ошибки
@@ -722,10 +720,14 @@
                             document.getElementById('usernameError').style.display = 'block';
                             document.querySelector('[name="username"]').classList.add('error');
                         }
+                    } else {
+                        document.getElementById('usernameError').textContent = 'Неизвестная ошибка сервера';
+                        document.getElementById('usernameError').style.display = 'block';
+                        document.querySelector('[name="username"]').classList.add('error');
                     }
                 }
             } catch (error) {
-                document.getElementById('usernameError').textContent = 'Ошибка сети: ' + error;
+                document.getElementById('usernameError').textContent = 'Ошибка сети: ' + error.message;
                 document.getElementById('usernameError').style.display = 'block';
                 document.querySelector('[name="username"]').classList.add('error');
             } finally {
@@ -766,27 +768,25 @@
                 
                 const result = await response.json();
                 
-                if (response.ok) {
-                    resultDiv.innerHTML = `✅ Вход выполнен! Добро пожаловать, ${result.username}!<br>Перенаправление в чат...`;
+                if (response.ok && result.success) {
+                    // Форматируем отображаемое имя для приветствия
+                    let welcomeName = result.user.display_name || result.user.username;
+                    resultDiv.innerHTML = `✅ Вход выполнен! Добро пожаловать, ${welcomeName}!<br>Перенаправление в чат...`;
                     resultDiv.style.display = 'block';
                     this.reset();
                     
-                    // Сохраняем токен в localStorage
-                    localStorage.setItem('token', result.access_token);
-                    localStorage.setItem('user_id', result.user_id);
-                    localStorage.setItem('username', result.username);
-                    
+                    // Автоматическая авторизация - токен уже в cookies
                     // Перенаправляем в чат через 2 секунды
                     setTimeout(() => {
-                        window.location.href = `/chat?user_id=${result.user_id}`;
+                        window.location.href = '/chat';
                     }, 2000);
                 } else {
-                    document.getElementById('loginUsernameError').textContent = result.detail || 'Ошибка входа';
+                    document.getElementById('loginUsernameError').textContent = result.detail || 'Неверное имя пользователя или пароль';
                     document.getElementById('loginUsernameError').style.display = 'block';
                     document.querySelector('[name="username"]').classList.add('error');
                 }
             } catch (error) {
-                document.getElementById('loginUsernameError').textContent = 'Ошибка сети: ' + error;
+                document.getElementById('loginUsernameError').textContent = 'Ошибка сети: ' + error.message;
                 document.getElementById('loginUsernameError').style.display = 'block';
                 document.querySelector('[name="username"]').classList.add('error');
             } finally {
@@ -798,18 +798,29 @@
 
         // Прокрутка к секции
         function scrollToSection(sectionId) {
-            document.getElementById(sectionId).scrollIntoView({
-                behavior: 'smooth'
-            });
+            const element = document.getElementById(sectionId);
+            if (element) {
+                element.scrollIntoView({
+                    behavior: 'smooth'
+                });
+            }
         }
 
         // Проверяем, есть ли уже токен
-        window.addEventListener('load', function() {
-            const token = localStorage.getItem('token');
-            if (token) {
-                document.getElementById('registerSuccess').innerHTML = 
-                    '✅ Вы уже авторизованы! <a href="/chat" style="color: var(--primary); text-decoration: none;">Перейти в чат</a>';
-                document.getElementById('registerSuccess').style.display = 'block';
+        window.addEventListener('load', async function() {
+            try {
+                const response = await fetch('/api/me');
+                if (response.ok) {
+                    const result = await response.json();
+                    if (result.success) {
+                        document.getElementById('registerSuccess').innerHTML = 
+                            `✅ Вы уже авторизованы как <strong>${result.user.display_name}</strong>! <br>
+                            <a href="/chat" style="color: var(--primary); text-decoration: none; margin-top: 1rem; display: inline-block;">Перейти в чат →</a>`;
+                        document.getElementById('registerSuccess').style.display = 'block';
+                    }
+                }
+            } catch (error) {
+                // Не авторизован - ничего не делаем
             }
         });
     </script>
