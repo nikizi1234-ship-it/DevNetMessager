@@ -729,4 +729,596 @@ async def get_all_chats(
         private_chats = []
         
         for user in users_with_messages:
-            # Проверяем, есть ли
+            # Проверяем, есть ли сообщения между пользователями
+            messages_count = db.query(Message).filter(
+                or_(
+                    and_(Message.from_user_id == current_user_id, Message.to_user_id == user.id),
+                    and_(Message.from_user_id == user.id, Message.to_user_id == current_user_id)
+                )
+            ).count()
+            
+            if messages_count > 0:
+                # Получаем последнее сообщение
+                last_message = db.query(Message).filter(
+                    or_(
+                        and_(Message.from_user_id == current_user_id, Message.to_user_id == user.id),
+                        and_(Message.from_user_id == user.id, Message.to_user_id == current_user_id)
+                    )
+                ).order_by(Message.created_at.desc()).first()
+                
+                private_chats.append({
+                    "id": user.id,
+                    "name": user.display_name,
+                    "type": "private",
+                    "username": user.username,
+                    "is_online": user.is_online,
+                    "last_login": user.last_login.isoformat() if user.last_login else None,
+                    "last_message": {
+                        "content": last_message.content if last_message else None,
+                        "timestamp": last_message.created_at.isoformat() if last_message else None,
+                        "is_my_message": last_message.from_user_id == current_user_id if last_message else None
+                    } if last_message else None
+                })
+        
+        # Получаем группы
+        groups = db.query(Group).join(GroupMember).filter(GroupMember.user_id == current_user_id).all()
+        group_chats = []
+        
+        for group in groups:
+            members_count = db.query(GroupMember).filter(GroupMember.group_id == group.id).count()
+            
+            # Получаем последнее сообщение в группе
+            last_message = db.query(Message).filter(Message.group_id == group.id)\
+                .order_by(Message.created_at.desc()).first()
+            
+            group_chats.append({
+                "id": group.id,
+                "name": group.name,
+                "description": group.description,
+                "type": "group",
+                "members_count": members_count,
+                "created_at": group.created_at.isoformat() if group.created_at else None,
+                "last_message": {
+                    "content": last_message.content if last_message else None,
+                    "timestamp": last_message.created_at.isoformat() if last_message else None
+                } if last_message else None
+            })
+        
+        return {
+            "private_chats": private_chats,
+            "group_chats": group_chats,
+            "total_chats": len(private_chats) + len(group_chats)
+        }
+        
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Ошибка загрузки чатов: {str(e)}"}
+        )
+
+# ========== СООБЩЕНИЯ ==========
+
+@app.get("/api/messages/{user_id}/{other_user_id}")
+async def get_message_history(
+    user_id: int,
+    other_user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Получение истории сообщений между двумя пользователями"""
+    try:
+        messages = db.query(Message).filter(
+            ((Message.from_user_id == user_id) & (Message.to_user_id == other_user_id)) |
+            ((Message.from_user_id == other_user_id) & (Message.to_user_id == user_id))
+        ).order_by(Message.created_at.asc()).all()
+        
+        print(f"📨 Loaded {len(messages)} messages between users {user_id} and {other_user_id}")
+        
+        return [
+            {
+                "id": msg.id,
+                "from_user_id": msg.from_user_id,
+                "to_user_id": msg.to_user_id,
+                "content": msg.content,
+                "type": msg.message_type,
+                "file_url": msg.file_url,
+                "timestamp": msg.created_at.isoformat(),
+                "is_my_message": msg.from_user_id == user_id
+            }
+            for msg in messages
+        ]
+        
+    except Exception as e:
+        print(f"❌ Error loading messages: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Ошибка загрузки истории сообщений: {str(e)}"}
+        )
+
+@app.get("/api/group-messages/{group_id}")
+async def get_group_messages(
+    group_id: int,
+    db: Session = Depends(get_db)
+):
+    """Получение истории сообщений в группе"""
+    try:
+        messages = db.query(Message).filter(Message.group_id == group_id)\
+            .order_by(Message.created_at.asc()).all()
+        
+        print(f"📨 Loaded {len(messages)} messages for group {group_id}")
+        
+        return [
+            {
+                "id": msg.id,
+                "from_user_id": msg.from_user_id,
+                "content": msg.content,
+                "type": msg.message_type,
+                "file_url": msg.file_url,
+                "timestamp": msg.created_at.isoformat()
+            }
+            for msg in messages
+        ]
+        
+    except Exception as e:
+        print(f"❌ Error loading group messages: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Ошибка загрузки групповых сообщений: {str(e)}"}
+        )
+
+# ========== ЗАГРУЗКА ФАЙЛОВ ==========
+
+@app.post("/api/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    request: Request = None,
+    db: Session = Depends(get_db)
+):
+    """Загрузка файла (изображения или документа)"""
+    try:
+        # Проверяем авторизацию
+        token = request.cookies.get("access_token") if request else None
+        if not token:
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Недействительный токен")
+        
+        user_id = payload.get("user_id")
+        
+        print(f"📤 Uploading file: {file.filename} by user {user_id}")
+        
+        # Определяем тип файла
+        file_type = "file"
+        if file.content_type.startswith("image/"):
+            file_type = "image"
+        elif file.content_type.startswith("video/"):
+            file_type = "video"
+        elif file.content_type.startswith("audio/"):
+            file_type = "audio"
+        
+        # Проверяем размер файла (максимум 10MB)
+        MAX_SIZE = 10 * 1024 * 1024  # 10MB
+        file.file.seek(0, 2)  # Перемещаемся в конец файла
+        file_size = file.file.tell()
+        file.file.seek(0)  # Возвращаемся в начало
+        
+        if file_size > MAX_SIZE:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": f"Файл слишком большой. Максимальный размер: {MAX_SIZE/1024/1024}MB"}
+            )
+        
+        # Генерируем уникальное имя файла
+        file_extension = file.filename.split('.')[-1] if '.' in file.filename else ''
+        unique_filename = f"{uuid.uuid4()}.{file_extension}"
+        
+        # Определяем путь для сохранения
+        save_dir = UPLOAD_DIR / f"{file_type}s"
+        save_dir.mkdir(exist_ok=True)
+        save_path = save_dir / unique_filename
+        
+        # Сохраняем файл
+        with open(save_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Сохраняем информацию в базу данных
+        db_file = FileModel(
+            filename=unique_filename,
+            original_filename=file.filename,
+            file_type=file_type,
+            file_size=file_size,
+            uploaded_by=user_id,
+            url=f"/uploads/{file_type}s/{unique_filename}"
+        )
+        
+        db.add(db_file)
+        db.commit()
+        db.refresh(db_file)
+        
+        print(f"✅ File uploaded successfully: {db_file.url}")
+        
+        return {
+            "success": True,
+            "file": {
+                "id": db_file.id,
+                "url": db_file.url,
+                "filename": db_file.original_filename,
+                "type": db_file.file_type,
+                "size": db_file.file_size
+            }
+        }
+        
+    except Exception as e:
+        print(f"❌ File upload error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Ошибка загрузки файла: {str(e)}"}
+        )
+
+# ========== WEB SOCKET ==========
+
+@app.websocket("/ws/{user_id}")
+async def websocket_endpoint(websocket: WebSocket, user_id: int):
+    """
+    WebSocket endpoint для реального времени
+    
+    Обрабатывает:
+    1. Подключение пользователя
+    2. Текстовые сообщения
+    3. Сообщения с файлами
+    4. Индикаторы набора текста
+    5. Отключение пользователя
+    """
+    await manager.connect(websocket, user_id)
+    
+    # Обновляем статус пользователя как онлайн
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.is_online = True
+            user.last_login = datetime.utcnow()
+            db.commit()
+            print(f"✅ User {user.username} connected (ID: {user_id})")
+    except Exception as e:
+        print(f"❌ Error updating user status: {e}")
+    finally:
+        db.close()
+    
+    try:
+        while True:
+            # Получаем сообщение от клиента
+            data = await websocket.receive_text()
+            message_data = json.loads(data)
+            message_type = message_data.get("type", "message")
+            
+            print(f"📨 Received {message_type} from user {user_id}: {message_data}")
+            
+            # Обрабатываем разные типы сообщений
+            if message_type == "message":
+                await handle_text_message(message_data, user_id)
+            elif message_type == "file_message":
+                await handle_file_message(message_data, user_id)
+            elif message_type == "typing":
+                await handle_typing_indicator(message_data, user_id)
+            elif message_type == "group_message":
+                await handle_group_message(message_data, user_id)
+                
+    except WebSocketDisconnect:
+        print(f"📴 User {user_id} disconnected")
+        
+        # Обновляем статус пользователя как офлайн
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == user_id).first()
+            if user:
+                user.is_online = False
+                db.commit()
+                print(f"✅ User {user.username} marked as offline")
+        except Exception as e:
+            print(f"❌ Error updating user status: {e}")
+        finally:
+            db.close()
+        
+        # Удаляем соединение
+        manager.disconnect(user_id)
+
+async def handle_text_message(message_data: dict, sender_id: int):
+    """Обработка текстовых сообщений"""
+    db = SessionLocal()
+    try:
+        receiver_id = message_data.get("to_user_id")
+        group_id = message_data.get("group_id")
+        content = message_data.get("content", "").strip()
+        
+        if not content:
+            return
+        
+        # Сохраняем в базу данных
+        db_message = Message(
+            from_user_id=sender_id,
+            to_user_id=receiver_id,
+            group_id=group_id,
+            content=content,
+            message_type="text"
+        )
+        
+        db.add(db_message)
+        db.commit()
+        db.refresh(db_message)
+        
+        # Отправляем получателю
+        if receiver_id:
+            await manager.send_personal_message(
+                json.dumps({
+                    "type": "message",
+                    "id": db_message.id,
+                    "from_user_id": sender_id,
+                    "to_user_id": receiver_id,
+                    "content": content,
+                    "timestamp": db_message.created_at.isoformat()
+                }),
+                receiver_id
+            )
+        # Отправляем в группу
+        elif group_id:
+            # Получаем всех участников группы
+            members = db.query(GroupMember).filter(GroupMember.group_id == group_id).all()
+            for member in members:
+                if member.user_id != sender_id:  # Не отправляем отправителю
+                    await manager.send_personal_message(
+                        json.dumps({
+                            "type": "group_message",
+                            "id": db_message.id,
+                            "group_id": group_id,
+                            "from_user_id": sender_id,
+                            "content": content,
+                            "timestamp": db_message.created_at.isoformat()
+                        }),
+                        member.user_id
+                    )
+        
+        # Подтверждение отправки отправителю
+        await manager.send_personal_message(
+            json.dumps({
+                "type": "message_sent",
+                "id": db_message.id,
+                "timestamp": db_message.created_at.isoformat()
+            }),
+            sender_id
+        )
+        
+        print(f"✅ Message sent from {sender_id}")
+        
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error handling text message: {e}")
+    finally:
+        db.close()
+
+async def handle_file_message(message_data: dict, sender_id: int):
+    """Обработка сообщений с файлами"""
+    db = SessionLocal()
+    try:
+        receiver_id = message_data.get("to_user_id")
+        group_id = message_data.get("group_id")
+        file_url = message_data.get("file_url")
+        content = message_data.get("content", "").strip()
+        
+        if not file_url:
+            return
+        
+        # Сохраняем в базу данных
+        db_message = Message(
+            from_user_id=sender_id,
+            to_user_id=receiver_id,
+            group_id=group_id,
+            content=content,
+            message_type="file",
+            file_url=file_url
+        )
+        
+        db.add(db_message)
+        db.commit()
+        db.refresh(db_message)
+        
+        # Отправляем получателю
+        if receiver_id:
+            await manager.send_personal_message(
+                json.dumps({
+                    "type": "file_message",
+                    "id": db_message.id,
+                    "from_user_id": sender_id,
+                    "to_user_id": receiver_id,
+                    "content": content,
+                    "file_url": file_url,
+                    "timestamp": db_message.created_at.isoformat()
+                }),
+                receiver_id
+            )
+        # Отправляем в группу
+        elif group_id:
+            members = db.query(GroupMember).filter(GroupMember.group_id == group_id).all()
+            for member in members:
+                if member.user_id != sender_id:
+                    await manager.send_personal_message(
+                        json.dumps({
+                            "type": "group_file_message",
+                            "id": db_message.id,
+                            "group_id": group_id,
+                            "from_user_id": sender_id,
+                            "content": content,
+                            "file_url": file_url,
+                            "timestamp": db_message.created_at.isoformat()
+                        }),
+                        member.user_id
+                    )
+        
+        # Подтверждение отправки
+        await manager.send_personal_message(
+            json.dumps({
+                "type": "message_sent",
+                "id": db_message.id,
+                "timestamp": db_message.created_at.isoformat()
+            }),
+            sender_id
+        )
+        
+        print(f"✅ File message sent from {sender_id}")
+        
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error handling file message: {e}")
+    finally:
+        db.close()
+
+async def handle_typing_indicator(message_data: dict, sender_id: int):
+    """Обработка индикатора набора текста"""
+    receiver_id = message_data.get("to_user_id")
+    group_id = message_data.get("group_id")
+    is_typing = message_data.get("is_typing", False)
+    
+    # Отправляем индикатор получателю
+    if receiver_id:
+        await manager.send_personal_message(
+            json.dumps({
+                "type": "typing",
+                "from_user_id": sender_id,
+                "is_typing": is_typing
+            }),
+            receiver_id
+        )
+    # Отправляем в группу
+    elif group_id:
+        db = SessionLocal()
+        try:
+            members = db.query(GroupMember).filter(GroupMember.group_id == group_id).all()
+            for member in members:
+                if member.user_id != sender_id:
+                    await manager.send_personal_message(
+                        json.dumps({
+                            "type": "group_typing",
+                            "group_id": group_id,
+                            "from_user_id": sender_id,
+                            "is_typing": is_typing
+                        }),
+                        member.user_id
+                    )
+        finally:
+            db.close()
+
+async def handle_group_message(message_data: dict, sender_id: int):
+    """Обработка групповых сообщений"""
+    await handle_text_message(message_data, sender_id)
+
+# ========== ФРОНТЕНД ==========
+
+@app.get("/")
+async def serve_frontend():
+    """Главная страница - отдает фронтенд"""
+    if frontend_dir.exists():
+        # Пробуем найти index.html
+        index_file = frontend_dir / "index.html"
+        if index_file.exists():
+            print(f"✅ Serving index.html from {index_file}")
+            return FileResponse(str(index_file))
+        
+        # Пробуем найти chat.html
+        chat_file = frontend_dir / "chat.html"
+        if chat_file.exists():
+            print(f"✅ Serving chat.html from {chat_file}")
+            return FileResponse(str(chat_file))
+    
+    print("❌ No frontend files found")
+    return HTMLResponse("""
+        <html>
+            <head><title>DevNet Messenger</title></head>
+            <body style="background: #0f0f0f; color: white; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh;">
+                <div style="text-align: center;">
+                    <h1>DevNet Messenger API</h1>
+                    <p>API is running successfully!</p>
+                    <p>Frontend files not found. Please upload chat.html to frontend/ directory.</p>
+                    <div style="margin-top: 20px;">
+                        <a href="/health" style="color: #10a37f;">Check Health</a> | 
+                        <a href="/api/test" style="color: #10a37f;">Test API</a>
+                    </div>
+                </div>
+            </body>
+        </html>
+    """)
+
+@app.get("/chat")
+async def serve_chat():
+    """Страница чата"""
+    if frontend_dir.exists() and (frontend_dir / "chat.html").exists():
+        chat_file = frontend_dir / "chat.html"
+        print(f"✅ Serving chat.html from {chat_file}")
+        return FileResponse(str(chat_file))
+    
+    return HTMLResponse("""
+        <html>
+            <head><title>Chat Not Found</title></head>
+            <body style="background: #0f0f0f; color: white; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh;">
+                <div style="text-align: center;">
+                    <h1>Chat Interface Not Found</h1>
+                    <p>Please ensure chat.html exists in frontend/ directory.</p>
+                    <a href="/" style="color: #10a37f;">Go Back</a>
+                </div>
+            </body>
+        </html>
+    """)
+
+# ========== HEALTH & TESTING ==========
+
+@app.get("/health")
+async def health_check():
+    """Проверка здоровья приложения"""
+    return {
+        "status": "healthy",
+        "service": "DevNet Messenger",
+        "version": "2.0.0",
+        "timestamp": datetime.utcnow().isoformat(),
+        "features": {
+            "websocket": True,
+            "file_upload": True,
+            "groups": True,
+            "auto_login": True
+        },
+        "database": "connected",
+        "frontend_available": frontend_dir.exists()
+    }
+
+@app.get("/api/test")
+async def api_test():
+    """Тестовый endpoint для проверки API"""
+    return {
+        "status": "success",
+        "message": "API is working correctly",
+        "endpoints": {
+            "auth": ["/api/auto-login", "/api/register", "/api/login", "/api/logout", "/api/me"],
+            "users": ["/api/users"],
+            "groups": ["/api/groups"],
+            "chats": ["/api/chats"],
+            "messages": ["/api/messages/{user_id}/{other_user_id}", "/api/group-messages/{group_id}"],
+            "files": ["/api/upload"],
+            "websocket": ["/ws/{user_id}"],
+            "health": ["/health", "/api/test"]
+        },
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+# ========== ЗАПУСК СЕРВЕРА ==========
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    print(f"🚀 Starting DevNet Messenger on port {port}")
+    print(f"📁 Frontend directory: {'Found' if frontend_dir.exists() else 'Not found'}")
+    print(f"📁 Upload directory: {UPLOAD_DIR}")
+    
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        reload=False
+    )
