@@ -3,40 +3,34 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 
-# Пробуем PostgreSQL из Railway, если нет - используем SQLite
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./devnet.db")
+# В Railway используем SQLite в постоянной директории /data
+# чтобы файл не терялся при перезапусках
+if os.environ.get("RAILWAY_ENVIRONMENT"):
+    # В Railway
+    SQLITE_PATH = "/data/devnet.db"
+    print("🚂 Running on Railway, using persistent storage at /data/")
+else:
+    # Локально
+    SQLITE_PATH = "./devnet.db"
+    print("💻 Running locally")
 
-# Если Railway предоставил шаблонный URL (с 'user', 'pass', 'host', 'port')
-if DATABASE_URL == "postgresql://user:pass@host:port/dbname":
-    print("⚠️  Railway DATABASE_URL is a placeholder, using SQLite")
-    DATABASE_URL = "sqlite:///./devnet.db"
-
-# Исправляем URL для SQLAlchemy (Railway использует postgres://, а нужно postgresql://)
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
+DATABASE_URL = f"sqlite:///{SQLITE_PATH}"
 print(f"🔧 Database URL: {DATABASE_URL}")
 
+# Создаем директорию если не существует (для Railway)
+if SQLITE_PATH.startswith("/data/"):
+    os.makedirs(os.path.dirname(SQLITE_PATH), exist_ok=True)
+
 try:
-    # Пытаемся подключиться к базе
-    if DATABASE_URL.startswith("sqlite"):
-        engine = create_engine(
-            DATABASE_URL, 
-            connect_args={"check_same_thread": False}
-        )
-        print("✅ SQLite database engine created successfully")
-    else:
-        engine = create_engine(DATABASE_URL)
-        print("✅ PostgreSQL database engine created successfully")
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        pool_pre_ping=True
+    )
+    print("✅ SQLite database engine created successfully")
 except Exception as e:
     print(f"❌ Database connection failed: {e}")
-    print("🔧 Fallback to SQLite: sqlite:///./devnet.db")
-    # Используем SQLite как резервный вариант
-    DATABASE_URL = "sqlite:///./devnet.db"
-    engine = create_engine(
-        DATABASE_URL, 
-        connect_args={"check_same_thread": False}
-    )
+    raise
 
 # Создаем сессию для работы с базой
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
