@@ -7,9 +7,9 @@
   "deploy": {
     "numReplicas": 1,
     "startCommand": "cd BackEnd && python main.py",
-    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyType": "ALWAYS",
     "restartPolicyMaxRetries": 10,
     "healthcheckPath": "/api/health",
-    "healthcheckTimeout": 60
+    "healthcheckTimeout": 30
   }
 }
