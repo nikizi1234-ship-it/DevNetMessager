@@ -22,7 +22,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
     from websocket_manager import manager
-    from database import engine, SessionLocal, get_db
+    from database import engine, SessionLocal, get_db, init_database
     from models import (
         Base, User, Message, Group, GroupMember, Channel, Subscription, 
         File as FileModel, Reaction, Notification, MessageType
@@ -33,9 +33,47 @@ except ImportError as e:
     print(f"❌ Ошибка импорта: {e}")
     raise
 
-# ========== ИНИЦИАЛИЗАЦИЯ ==========
+# ========== ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ==========
 
-Base.metadata.create_all(bind=engine)
+print("📦 Инициализация базы данных...")
+try:
+    # Инициализируем базу данных
+    init_database()
+    print("✅ База данных инициализирована")
+except Exception as e:
+    print(f"⚠️  Ошибка инициализации базы данных: {e}")
+
+# ========== СОЗДАНИЕ АДМИН-ПОЛЬЗОВАТЕЛЯ ЕСЛИ ЕГО НЕТ ==========
+
+def create_admin_user():
+    """Создает администратора если его нет в базе"""
+    db = SessionLocal()
+    try:
+        admin = db.query(User).filter(User.username == "admin").first()
+        if not admin:
+            print("👑 Создаем администратора...")
+            admin_user = User(
+                username="admin",
+                email="admin@devnet.local",
+                display_name="Администратор",
+                password_hash=get_password_hash("admin123"),
+                role="admin",
+                is_verified=True
+            )
+            db.add(admin_user)
+            db.commit()
+            print("✅ Администратор создан (логин: admin, пароль: admin123)")
+        else:
+            print("✅ Администратор уже существует")
+    except Exception as e:
+        print(f"❌ Ошибка создания администратора: {e}")
+    finally:
+        db.close()
+
+# Вызываем создание администратора
+create_admin_user()
+
+# ========== СОЗДАНИЕ FASTAPI ПРИЛОЖЕНИЯ ==========
 
 app = FastAPI(
     title="DevNet Messenger API",
@@ -162,7 +200,7 @@ try:
     create_default_channels(db)
     db.close()
 except Exception as e:
-    print(f"❌ Ошибка создания каналов: {e}")
+    print(f"⚠️  Ошибка создания каналов: {e}")
 
 # ========== API ENDPOINTS ==========
 
@@ -174,13 +212,153 @@ async def root():
 @app.get("/api/health")
 async def health_check():
     """Проверка здоровья API"""
-    return {
-        "status": "healthy",
-        "service": "DevNet Messenger API",
-        "version": "5.0.0",
-        "timestamp": datetime.utcnow().isoformat(),
-        "features": ["auth", "websocket", "groups", "channels", "media", "reactions"]
-    }
+    try:
+        # Простая проверка базы данных
+        db = SessionLocal()
+        try:
+            # Пробуем выполнить простой запрос
+            result = db.execute("SELECT 1")
+            db_status = "connected"
+        except Exception as e:
+            db_status = f"error: {str(e)}"
+        finally:
+            db.close()
+        
+        return {
+            "status": "healthy",
+            "service": "DevNet Messenger API",
+            "version": "5.0.0",
+            "timestamp": datetime.utcnow().isoformat(),
+            "database": db_status,
+            "features": ["auth", "websocket", "groups", "channels", "media", "reactions"]
+        }
+    except Exception as e:
+        return {
+            "status": "degraded",
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+# ========== АУТЕНТИФИКАЦИЯ ==========
+
+@app.post("/api/auth/register")
+async def register_user(
+    username: str = Form(...),
+    email: str = Form(...),
+    password: str = Form(...),
+    display_name: str = Form(None),
+    db: Session = Depends(get_db)
+):
+    """Регистрация нового пользователя"""
+    try:
+        # Проверяем уникальность username
+        existing_user = db.query(User).filter(User.username == username).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Имя пользователя уже занято")
+        
+        # Проверяем уникальность email
+        existing_email = db.query(User).filter(User.email == email).first()
+        if existing_email:
+            raise HTTPException(status_code=400, detail="Email уже используется")
+        
+        # Создаем пользователя
+        user = User(
+            username=username,
+            email=email,
+            display_name=display_name or username,
+            password_hash=get_password_hash(password)
+        )
+        
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        
+        # Создаем токен
+        access_token = create_access_token(data={"user_id": user.id, "username": user.username})
+        
+        return {
+            "success": True,
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "display_name": user.display_name,
+                "email": user.email,
+                "avatar_url": user.avatar_url
+            },
+            "access_token": access_token
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Ошибка регистрации: {str(e)}")
+
+@app.post("/api/auth/login")
+async def login_user(
+    username: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    """Вход пользователя"""
+    try:
+        user = db.query(User).filter(User.username == username).first()
+        if not user or not verify_password(password, user.password_hash):
+            raise HTTPException(status_code=401, detail="Неверное имя пользователя или пароль")
+        
+        # Создаем токен
+        access_token = create_access_token(data={"user_id": user.id, "username": user.username})
+        
+        return {
+            "success": True,
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "display_name": user.display_name,
+                "email": user.email,
+                "avatar_url": user.avatar_url,
+                "role": user.role
+            },
+            "access_token": access_token
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка входа: {str(e)}")
+
+@app.get("/api/auth/me")
+async def get_current_user_info(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """Получение информации о текущем пользователе"""
+    try:
+        user = get_current_user(request, db)
+        if not user:
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        
+        return {
+            "success": True,
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "display_name": user.display_name,
+                "email": user.email,
+                "avatar_url": user.avatar_url,
+                "banner_url": user.banner_url,
+                "bio": user.bio,
+                "role": user.role,
+                "is_verified": user.is_verified,
+                "is_online": user.is_online,
+                "created_at": user.created_at.isoformat() if user.created_at else None
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка загрузки пользователя: {str(e)}")
 
 # ========== КАНАЛЫ ==========
 
@@ -193,15 +371,9 @@ async def get_channels(
 ):
     """Получение списка каналов"""
     try:
-        token = request.cookies.get("access_token")
-        if not token:
+        user = get_current_user(request, db)
+        if not user:
             raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
         
         # Получаем каналы
         query = db.query(Channel).filter(Channel.is_public == True)
@@ -212,10 +384,8 @@ async def get_channels(
                        .all()
         
         # Проверяем подписки
-        subscribed_channel_ids = []
-        if user_id:
-            subscriptions = db.query(Subscription).filter(Subscription.user_id == user_id).all()
-            subscribed_channel_ids = [sub.channel_id for sub in subscriptions]
+        subscriptions = db.query(Subscription).filter(Subscription.user_id == user.id).all()
+        subscribed_channel_ids = [sub.channel_id for sub in subscriptions]
         
         channels_data = []
         for channel in channels:
@@ -270,19 +440,9 @@ async def create_channel(
 ):
     """Создание нового канала"""
     try:
-        token = request.cookies.get("access_token")
-        if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
-        user = db.query(User).filter(User.id == user_id).first()
-        
+        user = get_current_user(request, db)
         if not user:
-            raise HTTPException(status_code=404, detail="Пользователь не найден")
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
         
         # Проверяем имя канала
         if len(name) < 3:
@@ -302,7 +462,7 @@ async def create_channel(
             description=description,
             is_public=is_public,
             is_official=False,  # Только админ может создавать официальные каналы
-            created_by=user_id
+            created_by=user.id
         )
         
         db.add(channel)
@@ -312,7 +472,7 @@ async def create_channel(
         # Автоматически подписываем создателя
         subscription = Subscription(
             channel_id=channel.id,
-            user_id=user_id,
+            user_id=user.id,
             notifications=True
         )
         db.add(subscription)
@@ -347,15 +507,9 @@ async def subscribe_to_channel(
 ):
     """Подписка на канал"""
     try:
-        token = request.cookies.get("access_token")
-        if not token:
+        user = get_current_user(request, db)
+        if not user:
             raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
         
         # Проверяем существование канала
         channel = db.query(Channel).filter(Channel.id == channel_id).first()
@@ -368,7 +522,7 @@ async def subscribe_to_channel(
         # Проверяем, подписан ли уже пользователь
         existing_sub = db.query(Subscription).filter(
             Subscription.channel_id == channel_id,
-            Subscription.user_id == user_id
+            Subscription.user_id == user.id
         ).first()
         
         if existing_sub:
@@ -380,7 +534,7 @@ async def subscribe_to_channel(
         # Создаем подписку
         subscription = Subscription(
             channel_id=channel_id,
-            user_id=user_id,
+            user_id=user.id,
             notifications=True
         )
         
@@ -410,20 +564,14 @@ async def unsubscribe_from_channel(
 ):
     """Отписка от канала"""
     try:
-        token = request.cookies.get("access_token")
-        if not token:
+        user = get_current_user(request, db)
+        if not user:
             raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
         
         # Находим подписку
         subscription = db.query(Subscription).filter(
             Subscription.channel_id == channel_id,
-            Subscription.user_id == user_id
+            Subscription.user_id == user.id
         ).first()
         
         if not subscription:
@@ -452,15 +600,9 @@ async def get_channel_info(
 ):
     """Получение информации о канале"""
     try:
-        token = request.cookies.get("access_token")
-        if not token:
+        user = get_current_user(request, db)
+        if not user:
             raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
         
         # Получаем канал
         channel = db.query(Channel).filter(Channel.id == channel_id).first()
@@ -471,7 +613,7 @@ async def get_channel_info(
             # Проверяем подписку
             subscription = db.query(Subscription).filter(
                 Subscription.channel_id == channel_id,
-                Subscription.user_id == user_id
+                Subscription.user_id == user.id
             ).first()
             if not subscription:
                 raise HTTPException(status_code=403, detail="Доступ запрещен")
@@ -484,12 +626,11 @@ async def get_channel_info(
         
         # Проверяем подписку пользователя
         is_subscribed = False
-        if user_id:
-            subscription = db.query(Subscription).filter(
-                Subscription.channel_id == channel_id,
-                Subscription.user_id == user_id
-            ).first()
-            is_subscribed = subscription is not None
+        subscription = db.query(Subscription).filter(
+            Subscription.channel_id == channel_id,
+            Subscription.user_id == user.id
+        ).first()
+        is_subscribed = subscription is not None
         
         # Получаем последние сообщения
         last_messages = db.query(Message).filter(Message.channel_id == channel_id) \
@@ -540,18 +681,12 @@ async def get_groups(
 ):
     """Получение списка групп"""
     try:
-        token = request.cookies.get("access_token")
-        if not token:
+        user = get_current_user(request, db)
+        if not user:
             raise HTTPException(status_code=401, detail="Требуется аутентификация")
         
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
-        
         # Получаем группы пользователя
-        query = db.query(Group).join(GroupMember).filter(GroupMember.user_id == user_id)
+        query = db.query(Group).join(GroupMember).filter(GroupMember.user_id == user.id)
         total = query.count()
         groups = query.order_by(desc(Group.last_activity)) \
                      .offset((page - 1) * limit) \
@@ -581,8 +716,8 @@ async def get_groups(
                 "members_count": members_count,
                 "my_role": db.query(GroupMember).filter(
                     GroupMember.group_id == group.id,
-                    GroupMember.user_id == user_id
-                ).first().role if user_id else "member",
+                    GroupMember.user_id == user.id
+                ).first().role,
                 "last_message": {
                     "content": last_message.content if last_message else None,
                     "timestamp": last_message.created_at.isoformat() if last_message else None
@@ -615,15 +750,9 @@ async def create_group(
 ):
     """Создание новой группы"""
     try:
-        token = request.cookies.get("access_token")
-        if not token:
+        user = get_current_user(request, db)
+        if not user:
             raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
         
         # Проверяем имя группы
         if len(name) < 3:
@@ -642,7 +771,7 @@ async def create_group(
             name=name,
             description=description,
             is_public=is_public,
-            created_by=user_id
+            created_by=user.id
         )
         
         db.add(group)
@@ -652,7 +781,7 @@ async def create_group(
         # Добавляем создателя как владельца
         group_member = GroupMember(
             group_id=group.id,
-            user_id=user_id,
+            user_id=user.id,
             role="owner"
         )
         db.add(group_member)
@@ -686,15 +815,9 @@ async def join_group(
 ):
     """Вступление в группу"""
     try:
-        token = request.cookies.get("access_token")
-        if not token:
+        user = get_current_user(request, db)
+        if not user:
             raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
         
         # Проверяем существование группы
         group = db.query(Group).filter(Group.id == group_id).first()
@@ -707,7 +830,7 @@ async def join_group(
         # Проверяем, является ли пользователь уже участником
         existing_member = db.query(GroupMember).filter(
             GroupMember.group_id == group_id,
-            GroupMember.user_id == user_id
+            GroupMember.user_id == user.id
         ).first()
         
         if existing_member:
@@ -724,7 +847,7 @@ async def join_group(
         # Добавляем пользователя в группу
         group_member = GroupMember(
             group_id=group_id,
-            user_id=user_id,
+            user_id=user.id,
             role="member"
         )
         
@@ -754,15 +877,9 @@ async def get_group_info(
 ):
     """Получение информации о группе"""
     try:
-        token = request.cookies.get("access_token")
-        if not token:
+        user = get_current_user(request, db)
+        if not user:
             raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
         
         # Получаем группу
         group = db.query(Group).filter(Group.id == group_id).first()
@@ -772,7 +889,7 @@ async def get_group_info(
         # Проверяем, является ли пользователь участником
         membership = db.query(GroupMember).filter(
             GroupMember.group_id == group_id,
-            GroupMember.user_id == user_id
+            GroupMember.user_id == user.id
         ).first()
         
         if not membership and not group.is_public:
@@ -839,50 +956,44 @@ async def get_group_info(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка загрузки группы: {str(e)}")
 
-# ========== СООБЩЕНИЯ (для групп и каналов) ==========
+# ========== СООБЩЕНИЯ ==========
 
 @app.get("/api/chats/all")
 async def get_all_chats(
     request: Request,
     db: Session = Depends(get_db)
 ):
-    """Получение всех чатов пользователя (личные + группы + каналы)"""
+    """Получение всех чатов пользователя"""
     try:
-        token = request.cookies.get("access_token")
-        if not token:
+        user = get_current_user(request, db)
+        if not user:
             raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        current_user_id = payload.get("user_id")
         
         # Получаем личные чаты
         private_chats = []
-        users = db.query(User).filter(User.id != current_user_id).all()
+        users = db.query(User).filter(User.id != user.id).limit(50).all()
         
-        for user in users:
+        for other_user in users:
             # Проверяем, есть ли сообщения
             messages_count = db.query(Message).filter(
-                ((Message.from_user_id == current_user_id) & (Message.to_user_id == user.id)) |
-                ((Message.from_user_id == user.id) & (Message.to_user_id == current_user_id))
+                ((Message.from_user_id == user.id) & (Message.to_user_id == other_user.id)) |
+                ((Message.from_user_id == other_user.id) & (Message.to_user_id == user.id))
             ).count()
             
             if messages_count > 0:
                 # Получаем последнее сообщение
                 last_message = db.query(Message).filter(
-                    ((Message.from_user_id == current_user_id) & (Message.to_user_id == user.id)) |
-                    ((Message.from_user_id == user.id) & (Message.to_user_id == current_user_id))
+                    ((Message.from_user_id == user.id) & (Message.to_user_id == other_user.id)) |
+                    ((Message.from_user_id == other_user.id) & (Message.to_user_id == user.id))
                 ).order_by(Message.created_at.desc()).first()
                 
                 private_chats.append({
-                    "id": user.id,
-                    "name": user.display_name or user.username,
+                    "id": other_user.id,
+                    "name": other_user.display_name or other_user.username,
                     "type": "private",
-                    "avatar_url": user.avatar_url,
-                    "username": user.username,
-                    "is_online": user.is_online,
+                    "avatar_url": other_user.avatar_url,
+                    "username": other_user.username,
+                    "is_online": other_user.is_online,
                     "last_message": {
                         "content": last_message.content if last_message else None,
                         "timestamp": last_message.created_at.isoformat() if last_message else None
@@ -890,7 +1001,7 @@ async def get_all_chats(
                 })
         
         # Получаем группы пользователя
-        groups = db.query(Group).join(GroupMember).filter(GroupMember.user_id == current_user_id).all()
+        groups = db.query(Group).join(GroupMember).filter(GroupMember.user_id == user.id).all()
         group_chats = []
         
         for group in groups:
@@ -914,7 +1025,7 @@ async def get_all_chats(
             })
         
         # Получаем каналы пользователя
-        channels = db.query(Channel).join(Subscription).filter(Subscription.user_id == current_user_id).all()
+        channels = db.query(Channel).join(Subscription).filter(Subscription.user_id == user.id).all()
         channel_chats = []
         
         for channel in channels:
@@ -958,7 +1069,7 @@ async def get_all_chats(
 
 @app.get("/api/messages/chat/{chat_type}/{chat_id}")
 async def get_chat_messages(
-    chat_type: str,  # private, group, channel
+    chat_type: str,
     chat_id: int,
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
@@ -967,28 +1078,22 @@ async def get_chat_messages(
 ):
     """Получение сообщений чата"""
     try:
-        token = request.cookies.get("access_token") if request else None
-        if not token:
+        user = get_current_user(request, db)
+        if not user:
             raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        current_user_id = payload.get("user_id")
         
         query = db.query(Message)
         
         if chat_type == "private":
             query = query.filter(
-                ((Message.from_user_id == current_user_id) & (Message.to_user_id == chat_id)) |
-                ((Message.from_user_id == chat_id) & (Message.to_user_id == current_user_id))
+                ((Message.from_user_id == user.id) & (Message.to_user_id == chat_id)) |
+                ((Message.from_user_id == chat_id) & (Message.to_user_id == user.id))
             )
         elif chat_type == "group":
             # Проверяем членство в группе
             membership = db.query(GroupMember).filter(
                 GroupMember.group_id == chat_id,
-                GroupMember.user_id == current_user_id
+                GroupMember.user_id == user.id
             ).first()
             if not membership:
                 raise HTTPException(status_code=403, detail="Доступ запрещен")
@@ -997,7 +1102,7 @@ async def get_chat_messages(
             # Проверяем подписку на канал
             subscription = db.query(Subscription).filter(
                 Subscription.channel_id == chat_id,
-                Subscription.user_id == current_user_id
+                Subscription.user_id == user.id
             ).first()
             if not subscription:
                 raise HTTPException(status_code=403, detail="Доступ запрещен")
@@ -1045,7 +1150,7 @@ async def get_chat_messages(
                 "views_count": msg.views_count,
                 "created_at": msg.created_at.isoformat() if msg.created_at else None,
                 "reactions": reactions_grouped,
-                "is_my_message": msg.from_user_id == current_user_id
+                "is_my_message": msg.from_user_id == user.id
             })
         
         return {
@@ -1075,16 +1180,9 @@ async def upload_media(
 ):
     """Загрузка медиа файла"""
     try:
-        # Проверяем авторизацию
-        token = request.cookies.get("access_token") if request else None
-        if not token:
+        user = get_current_user(request, db)
+        if not user:
             raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
         
         # Определяем тип файла
         if media_type == "image":
@@ -1142,7 +1240,7 @@ async def upload_media(
             original_filename=file.filename,
             file_type=media_type,
             file_size=file_size,
-            uploaded_by=user_id,
+            uploaded_by=user.id,
             url=f"/uploads/{media_type}s/{unique_filename}"
         )
         
@@ -1179,15 +1277,9 @@ async def add_reaction(
 ):
     """Добавление реакции к сообщению"""
     try:
-        token = request.cookies.get("access_token") if request else None
-        if not token:
+        user = get_current_user(request, db)
+        if not user:
             raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
-        
-        user_id = payload.get("user_id")
         
         # Проверяем существование сообщения
         message = db.query(Message).filter(Message.id == message_id).first()
@@ -1199,17 +1291,17 @@ async def add_reaction(
         if message.group_id:
             membership = db.query(GroupMember).filter(
                 GroupMember.group_id == message.group_id,
-                GroupMember.user_id == user_id
+                GroupMember.user_id == user.id
             ).first()
             can_react = membership is not None
         elif message.channel_id:
             subscription = db.query(Subscription).filter(
                 Subscription.channel_id == message.channel_id,
-                Subscription.user_id == user_id
+                Subscription.user_id == user.id
             ).first()
             can_react = subscription is not None
         else:  # приватное сообщение
-            can_react = message.from_user_id == user_id or message.to_user_id == user_id
+            can_react = message.from_user_id == user.id or message.to_user_id == user.id
         
         if not can_react:
             raise HTTPException(status_code=403, detail="Нет доступа к этому сообщению")
@@ -1217,7 +1309,7 @@ async def add_reaction(
         # Проверяем существующую реакцию
         existing_reaction = db.query(Reaction).filter(
             Reaction.message_id == message_id,
-            Reaction.user_id == user_id,
+            Reaction.user_id == user.id,
             Reaction.emoji == emoji
         ).first()
         
@@ -1229,13 +1321,13 @@ async def add_reaction(
             # Удаляем другие реакции пользователя на это сообщение
             db.query(Reaction).filter(
                 Reaction.message_id == message_id,
-                Reaction.user_id == user_id
+                Reaction.user_id == user.id
             ).delete()
             
             # Добавляем новую реакцию
             reaction = Reaction(
                 message_id=message_id,
-                user_id=user_id,
+                user_id=user.id,
                 emoji=emoji
             )
             db.add(reaction)
@@ -1262,14 +1354,14 @@ async def add_reaction(
                 "message_id": message_id,
                 "reactions": reactions_grouped
             }),
-            user_id
+            user.id
         )
         
         # Отправляем другим участникам чата
         if message.group_id:
             members = db.query(GroupMember).filter(GroupMember.group_id == message.group_id).all()
             for member in members:
-                if member.user_id != user_id:
+                if member.user_id != user.id:
                     await manager.send_personal_message(
                         json.dumps({
                             "type": "reaction_update",
@@ -1292,7 +1384,7 @@ async def add_reaction(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Ошибка добавления реакции: {str(e)}")
 
-# ========== WEB SOCKET (расширенный) ==========
+# ========== WEB SOCKET ==========
 
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: int):
@@ -1351,7 +1443,7 @@ async def handle_text_message(message_data: dict, sender_id: int):
     """Обработка текстовых сообщений"""
     db = SessionLocal()
     try:
-        chat_type = message_data.get("chat_type", "private")  # private, group, channel
+        chat_type = message_data.get("chat_type", "private")
         chat_id = message_data.get("chat_id")
         content = message_data.get("content", "").strip()
         reply_to_id = message_data.get("reply_to_id")
@@ -1361,7 +1453,6 @@ async def handle_text_message(message_data: dict, sender_id: int):
         
         # Проверяем доступ к чату
         if chat_type == "group":
-            # Проверяем членство в группе
             membership = db.query(GroupMember).filter(
                 GroupMember.group_id == chat_id,
                 GroupMember.user_id == sender_id
@@ -1369,14 +1460,12 @@ async def handle_text_message(message_data: dict, sender_id: int):
             if not membership:
                 return
         elif chat_type == "channel":
-            # Проверяем подписку на канал
             subscription = db.query(Subscription).filter(
                 Subscription.channel_id == chat_id,
                 Subscription.user_id == sender_id
             ).first()
             if not subscription:
                 return
-            # В каналах сообщения не имеют отправителя (анонимны)
             sender_id = None
         
         # Сохраняем в базу
@@ -1407,50 +1496,38 @@ async def handle_text_message(message_data: dict, sender_id: int):
                 db.commit()
         
         # Отправляем получателям
+        response_data = {
+            "type": "message",
+            "chat_type": chat_type,
+            "id": db_message.id,
+            "content": content,
+            "reply_to_id": reply_to_id,
+            "timestamp": db_message.created_at.isoformat()
+        }
+        
         if chat_type == "private":
+            response_data["from_user_id"] = sender_id
+            response_data["to_user_id"] = chat_id
             await manager.send_personal_message(
-                json.dumps({
-                    "type": "message",
-                    "chat_type": "private",
-                    "id": db_message.id,
-                    "from_user_id": sender_id,
-                    "to_user_id": chat_id,
-                    "content": content,
-                    "reply_to_id": reply_to_id,
-                    "timestamp": db_message.created_at.isoformat()
-                }),
+                json.dumps(response_data),
                 chat_id
             )
         elif chat_type == "group":
+            response_data["group_id"] = chat_id
+            response_data["from_user_id"] = sender_id
             members = db.query(GroupMember).filter(GroupMember.group_id == chat_id).all()
             for member in members:
                 if member.user_id != sender_id:
                     await manager.send_personal_message(
-                        json.dumps({
-                            "type": "message",
-                            "chat_type": "group",
-                            "id": db_message.id,
-                            "group_id": chat_id,
-                            "from_user_id": sender_id,
-                            "content": content,
-                            "reply_to_id": reply_to_id,
-                            "timestamp": db_message.created_at.isoformat()
-                        }),
+                        json.dumps(response_data),
                         member.user_id
                     )
         elif chat_type == "channel":
+            response_data["channel_id"] = chat_id
             subscribers = db.query(Subscription).filter(Subscription.channel_id == chat_id).all()
             for subscriber in subscribers:
                 await manager.send_personal_message(
-                    json.dumps({
-                        "type": "message",
-                        "chat_type": "channel",
-                        "id": db_message.id,
-                        "channel_id": chat_id,
-                        "content": content,
-                        "reply_to_id": reply_to_id,
-                        "timestamp": db_message.created_at.isoformat()
-                    }),
+                    json.dumps(response_data),
                     subscriber.user_id
                 )
         
@@ -1510,7 +1587,6 @@ async def handle_typing_indicator(message_data: dict, sender_id: int):
         finally:
             db.close()
     elif chat_type == "channel":
-        # В каналах индикаторы набора не отображаются
         pass
 
 async def handle_read_receipt(message_data: dict, user_id: int):
@@ -1521,7 +1597,6 @@ async def handle_read_receipt(message_data: dict, user_id: int):
     try:
         message = db.query(Message).filter(Message.id == message_id).first()
         if message:
-            # Увеличиваем счетчик просмотров
             message.views_count += 1
             db.commit()
     finally:
@@ -1568,6 +1643,7 @@ if __name__ == "__main__":
     print(f"📁 Директория загрузок: {UPLOAD_DIR}")
     print(f"📁 Директория фронтенда: {frontend_dir}")
     print(f"📱 Документация API: http://localhost:{port}/api/docs")
+    print("👑 Администратор: admin / admin123")
     
     uvicorn.run(
         "main:app",
