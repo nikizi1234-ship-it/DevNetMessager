@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, Column, Integer, String, Boolean, DateTime, ForeignKey, Text
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -21,24 +21,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # ========== ИМПОРТ МОДУЛЕЙ ==========
 
 try:
-    from database import engine, SessionLocal, get_db, init_database
+    from database import engine, SessionLocal, get_db, Base
     print("✅ Database module imported successfully")
 except ImportError as e:
     print(f"❌ Error importing database module: {e}")
     raise
 
-try:
-    # Создаем таблицы БД
-    init_database()
-    print("✅ Database initialized successfully")
-except Exception as e:
-    print(f"⚠️  Warning during database init: {e}")
-
-# ========== МОДЕЛИ ==========
-
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text
-from sqlalchemy.orm import relationship
-from database import Base
+# ========== МОДЕЛИ (должны быть ОДИН раз) ==========
 
 # Enums
 class MessageType(str, enum.Enum):
@@ -86,6 +75,14 @@ class Group(Base):
     created_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
 
+# ========== СОЗДАНИЕ ТАБЛИЦ (если их нет) ==========
+
+try:
+    Base.metadata.create_all(bind=engine)
+    print("✅ Database tables created/verified successfully")
+except Exception as e:
+    print(f"⚠️  Warning during table creation: {e}")
+
 # ========== ПРОСТОЙ WEBSOCKET MANAGER ==========
 
 class ConnectionManager:
@@ -110,7 +107,6 @@ manager = ConnectionManager()
 
 from passlib.context import CryptContext
 from jose import JWTError, jwt
-from datetime import datetime, timedelta
 
 SECRET_KEY = "devnet_secret_key_change_in_production"
 ALGORITHM = "HS256"
@@ -137,6 +133,34 @@ def verify_token(token: str):
         return payload
     except JWTError:
         return None
+
+# ========== СОЗДАНИЕ АДМИНИСТРАТОРА (если нет) ==========
+
+def create_admin_user():
+    """Создает администратора если его нет в базе"""
+    db = SessionLocal()
+    try:
+        admin = db.query(User).filter(User.username == "admin").first()
+        if not admin:
+            print("👑 Создаем администратора...")
+            admin_user = User(
+                username="admin",
+                email="admin@devnet.local",
+                display_name="Администратор",
+                password_hash=get_password_hash("admin123")
+            )
+            db.add(admin_user)
+            db.commit()
+            print("✅ Администратор создан (логин: admin, пароль: admin123)")
+        else:
+            print("✅ Администратор уже существует")
+    except Exception as e:
+        print(f"⚠️  Ошибка создания администратора: {e}")
+    finally:
+        db.close()
+
+# Вызываем создание администратора
+create_admin_user()
 
 # ========== СОЗДАНИЕ FASTAPI ПРИЛОЖЕНИЯ ==========
 
@@ -202,7 +226,7 @@ async def health_check():
 async def debug_info():
     """Отладочная информация"""
     return {
-        "database_url": os.environ.get("DATABASE_URL", "sqlite:///:memory:"),
+        "database_url": "sqlite:///:memory:" if os.environ.get("RAILWAY_ENVIRONMENT") else "sqlite:///./devnet.db",
         "railway_env": os.environ.get("RAILWAY_ENVIRONMENT"),
         "port": os.environ.get("PORT", 8000),
         "upload_dir": str(UPLOAD_DIR),
@@ -1178,7 +1202,6 @@ async def test_page():
         </div>
         
         <script>
-            const API_BASE = '';
             let testResults = {};
             
             async function testAll() {
