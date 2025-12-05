@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, Enum, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from database import Base
+from database import Base  # Импортируем Base из database.py
 import enum
 
 # Типы чатов
