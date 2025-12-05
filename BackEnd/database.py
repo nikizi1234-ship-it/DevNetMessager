@@ -26,7 +26,7 @@ try:
         engine = create_engine(
             DATABASE_URL,
             connect_args={"check_same_thread": False},
-            echo=False  # Отключаем логи SQL для производительности
+            echo=False
         )
         print("✅ In-memory SQLite engine created")
     else:
@@ -34,7 +34,7 @@ try:
         engine = create_engine(
             DATABASE_URL,
             connect_args={"check_same_thread": False},
-            echo=True  # Включаем логи для отладки
+            echo=True
         )
         print("✅ File-based SQLite engine created")
         
@@ -60,12 +60,6 @@ def get_db():
 def init_database():
     """Создает все таблицы в базе данных"""
     try:
-        # Импортируем модели чтобы SQLAlchemy их зарегистрировал
-        from models import (
-            User, Message, Group, GroupMember, Channel, 
-            Subscription, File, Reaction, Notification
-        )
-        
         # Создаем все таблицы
         Base.metadata.create_all(bind=engine)
         print("✅ Database tables created successfully")
@@ -74,21 +68,14 @@ def init_database():
         db = SessionLocal()
         try:
             # Проверяем, есть ли пользователи
+            from models import User
             user_count = db.query(User).count()
-            if user_count == 0:
-                print("📝 No users found in database")
+            print(f"👥 Found {user_count} users in database")
+        except Exception as e:
+            print(f"⚠️  Could not check users: {e}")
         finally:
             db.close()
             
     except Exception as e:
         print(f"❌ Error initializing database: {e}")
         raise
-
-# Функция для очистки базы данных (только для тестирования)
-def drop_database():
-    """Удаляет все таблицы (только для разработки!)"""
-    try:
-        Base.metadata.drop_all(bind=engine)
-        print("🗑️  All tables dropped")
-    except Exception as e:
-        print(f"❌ Error dropping database: {e}")
