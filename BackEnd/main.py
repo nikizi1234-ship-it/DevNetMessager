@@ -1,9 +1,9 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Form, Request, File, UploadFile, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Form, Request, File, UploadFile, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,7 +12,7 @@ import os
 import sys
 import shutil
 import uuid
-from typing import Optional
+from typing import Optional, List
 import hashlib
 import secrets
 
@@ -136,13 +136,13 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Настройка CORS
+# Настройка CORS - разрешаем все для фронтенда
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=True,
 )
 
 # Создаем директории для загрузок
@@ -164,12 +164,8 @@ print(f"📁 Frontend directory: {frontend_dir}")
 # Монтируем статические файлы фронтенда
 if frontend_dir.exists():
     print(f"✅ Frontend found: {frontend_dir}")
-    # Монтируем директорию фронтенда как статическую
-    app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
-    # Также монтируем отдельно для стилей
-    app.mount("/css", StaticFiles(directory=str(frontend_dir)), name="css")
-    # Монтируем корень фронтенда для HTML файлов
-    app.mount("/frontend", StaticFiles(directory=str(frontend_dir)), name="frontend")
+    # Монтируем всю директорию фронтенда как статическую
+    app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
 else:
     print(f"⚠️  Frontend not found: {frontend_dir}")
     # Создаем минимальный фронтенд если его нет
@@ -179,441 +175,6 @@ else:
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 # ========== API ENDPOINTS ==========
-
-@app.get("/")
-async def root():
-    """Перенаправление на главную страницу"""
-    return RedirectResponse("/index.html")
-
-@app.get("/index.html")
-async def serve_index():
-    """Сервим index.html из фронтенд директории"""
-    index_path = frontend_dir / "index.html"
-    if index_path.exists():
-        return FileResponse(str(index_path))
-    else:
-        # Если файла нет, возвращаем простую страницу
-        return HTMLResponse("""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>DevNet Messenger</title>
-            <link rel="stylesheet" href="/css/style.css">
-            <style>
-                body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
-                .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-                header { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 30px; }
-                h1 { color: #667eea; margin: 0; font-size: 2.5em; }
-                .nav { display: flex; gap: 20px; margin-top: 20px; }
-                .nav a { padding: 10px 20px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; transition: background 0.3s; }
-                .nav a:hover { background: #764ba2; }
-                .dashboard { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-                .card { background: white; padding: 25px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-                .card h2 { color: #333; margin-top: 0; }
-                .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 20px; }
-                .status-item { background: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 4px solid #667eea; }
-                .status-item .label { font-weight: bold; color: #666; font-size: 0.9em; }
-                .status-item .value { font-size: 1.2em; margin-top: 5px; }
-                .actions { margin-top: 30px; }
-                .test-buttons { display: flex; gap: 10px; flex-wrap: wrap; }
-                .test-btn { padding: 12px 24px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; transition: all 0.3s; }
-                .test-btn.health { background: #10b981; color: white; }
-                .test-btn.debug { background: #3b82f6; color: white; }
-                .test-btn:hover { opacity: 0.9; transform: translateY(-2px); }
-                #testResult { margin-top: 20px; padding: 15px; background: #f1f5f9; border-radius: 8px; font-family: monospace; white-space: pre-wrap; }
-                @media (max-width: 768px) {
-                    .dashboard { grid-template-columns: 1fr; }
-                }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <header>
-                    <h1>🚀 DevNet Messenger</h1>
-                    <p>Простой и быстрый мессенджер для разработчиков</p>
-                    <div class="nav">
-                        <a href="/chat.html">💬 Чат</a>
-                        <a href="/api/docs">📖 API документация</a>
-                        <a href="/api/health">🔧 Проверка здоровья</a>
-                        <a href="/api/debug">🛠️ Отладка</a>
-                    </div>
-                </header>
-                
-                <div class="dashboard">
-                    <div class="card">
-                        <h2>Статус системы</h2>
-                        <div class="status-grid">
-                            <div class="status-item">
-                                <div class="label">Статус</div>
-                                <div class="value" id="statusText">Проверка...</div>
-                            </div>
-                            <div class="status-item">
-                                <div class="label">Версия</div>
-                                <div class="value">1.0.0</div>
-                            </div>
-                            <div class="status-item">
-                                <div class="label">Время сервера</div>
-                                <div class="value" id="serverTime">Загрузка...</div>
-                            </div>
-                            <div class="status-item">
-                                <div class="label">База данных</div>
-                                <div class="value" id="dbType">Загрузка...</div>
-                            </div>
-                        </div>
-                        
-                        <div class="actions">
-                            <h3>Проверка подключения</h3>
-                            <div class="test-buttons">
-                                <button class="test-btn health" onclick="testHealth()">Test Health</button>
-                                <button class="test-btn debug" onclick="testDebug()">Test Debug</button>
-                            </div>
-                            <div id="testResult"></div>
-                        </div>
-                    </div>
-                    
-                    <div class="card">
-                        <h2>Быстрый доступ</h2>
-                        <div style="display: grid; gap: 15px;">
-                            <a href="/chat.html" style="display: block; padding: 15px; background: #667eea; color: white; text-decoration: none; border-radius: 8px; text-align: center;">
-                                <h3 style="margin: 0;">💬 Перейти в чат</h3>
-                                <p style="margin: 5px 0 0 0; opacity: 0.9;">Общайтесь в реальном времени</p>
-                            </a>
-                            <a href="/api/docs" style="display: block; padding: 15px; background: #10b981; color: white; text-decoration: none; border-radius: 8px; text-align: center;">
-                                <h3 style="margin: 0;">📖 API документация</h3>
-                                <p style="margin: 5px 0 0 0; opacity: 0.9;">Полная документация API</p>
-                            </a>
-                            <div style="padding: 15px; background: #f8f9fa; border-radius: 8px;">
-                                <h3 style="margin: 0;">👑 Тестовый аккаунт</h3>
-                                <p style="margin: 5px 0 0 0;"><strong>Логин:</strong> admin</p>
-                                <p style="margin: 5px 0 0 0;"><strong>Пароль:</strong> admin123</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <script>
-                // Обновление времени сервера
-                function updateServerTime() {
-                    const now = new Date();
-                    const options = { 
-                        year: 'numeric', 
-                        month: '2-digit', 
-                        day: '2-digit',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                        second: '2-digit'
-                    };
-                    document.getElementById('serverTime').textContent = now.toLocaleDateString('ru-RU', options);
-                }
-                
-                // Проверка здоровья системы
-                async function testHealth() {
-                    try {
-                        const response = await fetch('/api/health');
-                        const data = await response.json();
-                        document.getElementById('testResult').textContent = JSON.stringify(data, null, 2);
-                        document.getElementById('statusText').textContent = '✅ Работает';
-                        document.getElementById('dbType').textContent = data.database || 'sqlite';
-                    } catch (error) {
-                        document.getElementById('testResult').textContent = '❌ Ошибка: ' + error;
-                        document.getElementById('statusText').textContent = '❌ Ошибка';
-                    }
-                }
-                
-                // Проверка отладки
-                async function testDebug() {
-                    try {
-                        const response = await fetch('/api/debug');
-                        const data = await response.json();
-                        document.getElementById('testResult').textContent = JSON.stringify(data, null, 2);
-                    } catch (error) {
-                        document.getElementById('testResult').textContent = '❌ Ошибка: ' + error;
-                    }
-                }
-                
-                // Инициализация
-                document.addEventListener('DOMContentLoaded', function() {
-                    updateServerTime();
-                    setInterval(updateServerTime, 1000);
-                    testHealth(); // Автоматически проверяем здоровье при загрузке
-                });
-            </script>
-        </body>
-        </html>
-        """)
-
-@app.get("/chat.html")
-async def serve_chat():
-    """Сервим chat.html из фронтенд директории"""
-    chat_path = frontend_dir / "chat.html"
-    if chat_path.exists():
-        return FileResponse(str(chat_path))
-    else:
-        # Если файла нет, возвращаем простой чат
-        return HTMLResponse("""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>DevNet Chat</title>
-            <style>
-                body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: #f5f5f5; }
-                .container { max-width: 1200px; margin: 0 auto; padding: 20px; display: flex; gap: 20px; }
-                .sidebar { width: 300px; background: white; border-radius: 10px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-                .chat-area { flex: 1; display: flex; flex-direction: column; }
-                .chat-header { background: white; padding: 20px; border-radius: 10px 10px 0 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-                .messages-container { flex: 1; background: white; padding: 20px; overflow-y: auto; max-height: 600px; }
-                .message-input { display: flex; gap: 10px; padding: 20px; background: white; border-radius: 0 0 10px 10px; box-shadow: 0 -2px 4px rgba(0,0,0,0.1); }
-                #messages { display: flex; flex-direction: column; gap: 10px; }
-                .message { padding: 12px 16px; border-radius: 10px; max-width: 70%; }
-                .message.sent { background: #667eea; color: white; align-self: flex-end; }
-                .message.received { background: #e5e7eb; color: #333; align-self: flex-start; }
-                input[type="text"] { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 6px; }
-                button { padding: 12px 24px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; }
-                button:hover { background: #764ba2; }
-                #auth { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
-                .user-list { margin-top: 20px; }
-                .user-item { padding: 10px; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 10px; }
-                .online-dot { width: 8px; height: 8px; background: #10b981; border-radius: 50%; }
-                .offline-dot { width: 8px; height: 8px; background: #9ca3af; border-radius: 50%; }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="sidebar">
-                    <div id="auth">
-                        <h2>Вход в систему</h2>
-                        <div style="display: flex; flex-direction: column; gap: 10px;">
-                            <input type="text" id="username" placeholder="Логин" value="admin">
-                            <input type="password" id="password" placeholder="Пароль" value="admin123">
-                            <button onclick="login()">Войти</button>
-                        </div>
-                        <p style="margin-top: 15px; font-size: 0.9em; color: #666;">
-                            Нет аккаунта? <a href="javascript:void(0)" onclick="showRegister()">Зарегистрироваться</a>
-                        </p>
-                    </div>
-                    
-                    <div class="user-list">
-                        <h3>Пользователи онлайн</h3>
-                        <div id="onlineUsers"></div>
-                    </div>
-                </div>
-                
-                <div class="chat-area">
-                    <div class="chat-header">
-                        <h2>💬 Общий чат</h2>
-                        <div id="userInfo" style="display: none;">
-                            Вы вошли как: <span id="currentUsername"></span>
-                        </div>
-                    </div>
-                    
-                    <div class="messages-container">
-                        <div id="messages"></div>
-                    </div>
-                    
-                    <div class="message-input">
-                        <input type="text" id="messageInput" placeholder="Введите сообщение..." disabled>
-                        <button id="sendButton" onclick="sendMessage()" disabled>Отправить</button>
-                    </div>
-                </div>
-            </div>
-            
-            <script>
-                let ws = null;
-                let currentUser = null;
-                
-                async function login() {
-                    const username = document.getElementById('username').value;
-                    const password = document.getElementById('password').value;
-                    
-                    if (!username || !password) {
-                        alert('Введите логин и пароль');
-                        return;
-                    }
-                    
-                    const formData = new FormData();
-                    formData.append('username', username);
-                    formData.append('password', password);
-                    
-                    try {
-                        const response = await fetch('/api/auth/login', {
-                            method: 'POST',
-                            body: new URLSearchParams({
-                                username: username,
-                                password: password
-                            })
-                        });
-                        
-                        if (response.ok) {
-                            const data = await response.json();
-                            currentUser = data.user;
-                            
-                            // Обновляем интерфейс
-                            document.getElementById('auth').style.display = 'none';
-                            document.getElementById('userInfo').style.display = 'block';
-                            document.getElementById('currentUsername').textContent = currentUser.username;
-                            document.getElementById('messageInput').disabled = false;
-                            document.getElementById('sendButton').disabled = false;
-                            
-                            // Подключаем WebSocket
-                            connectWebSocket();
-                            
-                            // Загружаем сообщения
-                            loadMessages();
-                            
-                            // Загружаем пользователей
-                            loadUsers();
-                            
-                        } else {
-                            const error = await response.json();
-                            alert('Ошибка входа: ' + (error.detail || 'Неверные данные'));
-                        }
-                    } catch (error) {
-                        alert('Ошибка сети: ' + error);
-                    }
-                }
-                
-                function connectWebSocket() {
-                    if (!currentUser) return;
-                    
-                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                    const wsUrl = `${protocol}//${window.location.host}/ws/${currentUser.id}`;
-                    ws = new WebSocket(wsUrl);
-                    
-                    ws.onopen = function() {
-                        console.log('WebSocket подключен');
-                    };
-                    
-                    ws.onmessage = function(event) {
-                        const data = JSON.parse(event.data);
-                        addMessage(data.from_user_id, data.content, false);
-                    };
-                    
-                    ws.onclose = function() {
-                        console.log('WebSocket отключен');
-                        setTimeout(connectWebSocket, 3000);
-                    };
-                }
-                
-                async function loadMessages() {
-                    try {
-                        const response = await fetch('/api/messages?limit=50');
-                        const data = await response.json();
-                        
-                        if (data.success && data.messages) {
-                            const messagesDiv = document.getElementById('messages');
-                            messagesDiv.innerHTML = '';
-                            
-                            data.messages.forEach(msg => {
-                                const isMe = msg.sender && msg.sender.id === currentUser.id;
-                                addMessage(msg.sender?.username || 'System', msg.content, isMe);
-                            });
-                            
-                            // Прокручиваем вниз
-                            messagesDiv.scrollTop = messagesDiv.scrollHeight;
-                        }
-                    } catch (error) {
-                        console.error('Ошибка загрузки сообщений:', error);
-                    }
-                }
-                
-                async function loadUsers() {
-                    try {
-                        const response = await fetch('/api/users');
-                        const data = await response.json();
-                        
-                        if (data.success && data.users) {
-                            const onlineUsersDiv = document.getElementById('onlineUsers');
-                            onlineUsersDiv.innerHTML = '';
-                            
-                            data.users.forEach(user => {
-                                const userDiv = document.createElement('div');
-                                userDiv.className = 'user-item';
-                                userDiv.innerHTML = `
-                                    <div class="${user.is_online ? 'online-dot' : 'offline-dot'}"></div>
-                                    <div>
-                                        <strong>${user.display_name || user.username}</strong>
-                                        <div style="font-size: 0.8em; color: #666;">${user.username}</div>
-                                    </div>
-                                `;
-                                onlineUsersDiv.appendChild(userDiv);
-                            });
-                        }
-                    } catch (error) {
-                        console.error('Ошибка загрузки пользователей:', error);
-                    }
-                }
-                
-                function sendMessage() {
-                    const messageInput = document.getElementById('messageInput');
-                    const message = messageInput.value.trim();
-                    
-                    if (!message || !ws) return;
-                    
-                    if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({
-                            type: 'message',
-                            content: message
-                        }));
-                        
-                        addMessage(currentUser.username, message, true);
-                        messageInput.value = '';
-                    }
-                }
-                
-                function addMessage(sender, text, isMe) {
-                    const messagesDiv = document.getElementById('messages');
-                    const messageDiv = document.createElement('div');
-                    messageDiv.className = `message ${isMe ? 'sent' : 'received'}`;
-                    messageDiv.innerHTML = `
-                        <div><strong>${sender}:</strong></div>
-                        <div>${text}</div>
-                        <div style="font-size: 0.8em; opacity: 0.7; margin-top: 5px;">
-                            ${new Date().toLocaleTimeString()}
-                        </div>
-                    `;
-                    messagesDiv.appendChild(messageDiv);
-                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
-                }
-                
-                // Ввод по Enter
-                document.getElementById('messageInput').addEventListener('keypress', function(e) {
-                    if (e.key === 'Enter') {
-                        sendMessage();
-                    }
-                });
-                
-                function showRegister() {
-                    const username = prompt('Введите имя пользователя:');
-                    const password = prompt('Введите пароль:');
-                    const email = prompt('Введите email:');
-                    
-                    if (username && password && email) {
-                        fetch('/api/auth/register', {
-                            method: 'POST',
-                            body: new URLSearchParams({
-                                username: username,
-                                password: password,
-                                email: email
-                            })
-                        })
-                        .then(response => response.json())
-                        .then(data => {
-                            if (data.success) {
-                                alert('Регистрация успешна! Теперь войдите в систему.');
-                                document.getElementById('username').value = username;
-                                document.getElementById('password').value = password;
-                            } else {
-                                alert('Ошибка регистрации: ' + (data.detail || 'Неизвестная ошибка'));
-                            }
-                        })
-                        .catch(error => alert('Ошибка сети: ' + error));
-                    }
-                }
-            </script>
-        </body>
-        </html>
-        """)
 
 @app.get("/api/health")
 async def health_check():
@@ -647,7 +208,7 @@ async def register_user(
     username: str = Form(...),
     email: str = Form(...),
     password: str = Form(...),
-    display_name: str = Form(None),
+    display_name: Optional[str] = Form(None),
     db: Session = Depends(get_db)
 ):
     """Регистрация нового пользователя"""
@@ -655,26 +216,38 @@ async def register_user(
         # Проверяем уникальность username
         existing_user = db.query(User).filter(User.username == username).first()
         if existing_user:
-            raise HTTPException(status_code=400, detail="Имя пользователя уже занято")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Имя пользователя уже занято"
+            )
         
         # Проверяем уникальность email
         existing_email = db.query(User).filter(User.email == email).first()
         if existing_email:
-            raise HTTPException(status_code=400, detail="Email уже используется")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email уже используется"
+            )
         
         # Проверяем пароль
         if len(password) < 6:
-            raise HTTPException(status_code=400, detail="Пароль должен быть не менее 6 символов")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Пароль должен быть не менее 6 символов"
+            )
         
-        # Обрезаем пароль если слишком длинный
-        password_to_hash = password[:72] if len(password) > 72 else password
+        if len(password) > 72:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Пароль не должен превышать 72 символа"
+            )
         
         # Создаем пользователя
         user = User(
             username=username,
             email=email,
             display_name=display_name or username,
-            password_hash=get_password_hash(password_to_hash)
+            password_hash=get_password_hash(password)
         )
         
         db.add(user)
@@ -682,10 +255,13 @@ async def register_user(
         db.refresh(user)
         
         # Создаем токен
-        access_token = create_access_token(data={"user_id": user.id, "username": user.username})
+        access_token = create_access_token(
+            data={"user_id": user.id, "username": user.username}
+        )
         
-        response = JSONResponse(content={
+        response_data = {
             "success": True,
+            "message": "Регистрация успешна",
             "user": {
                 "id": user.id,
                 "username": user.username,
@@ -693,24 +269,18 @@ async def register_user(
                 "email": user.email
             },
             "access_token": access_token
-        })
+        }
         
-        # Устанавливаем токен в куки
-        response.set_cookie(
-            key="access_token",
-            value=access_token,
-            httponly=True,
-            max_age=1800,  # 30 минут
-            samesite="lax"
-        )
-        
-        return response
+        return JSONResponse(content=response_data)
         
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Ошибка регистрации: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка регистрации: {str(e)}"
+        )
 
 @app.post("/api/auth/login")
 async def login_user(
@@ -722,13 +292,19 @@ async def login_user(
     try:
         user = db.query(User).filter(User.username == username).first()
         if not user or not verify_password(password, user.password_hash):
-            raise HTTPException(status_code=401, detail="Неверное имя пользователя или пароль")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Неверное имя пользователя или пароль"
+            )
         
         # Создаем токен
-        access_token = create_access_token(data={"user_id": user.id, "username": user.username})
+        access_token = create_access_token(
+            data={"user_id": user.id, "username": user.username}
+        )
         
-        response = JSONResponse(content={
+        response_data = {
             "success": True,
+            "message": "Вход выполнен успешно",
             "user": {
                 "id": user.id,
                 "username": user.username,
@@ -737,23 +313,24 @@ async def login_user(
                 "avatar_url": user.avatar_url
             },
             "access_token": access_token
-        })
+        }
         
-        # Устанавливаем токен в куки
-        response.set_cookie(
-            key="access_token",
-            value=access_token,
-            httponly=True,
-            max_age=1800,
-            samesite="lax"
-        )
-        
-        return response
+        return JSONResponse(content=response_data)
         
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка входа: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка входа: {str(e)}"
+        )
+
+@app.post("/api/auth/logout")
+async def logout_user():
+    """Выход пользователя"""
+    response = JSONResponse(content={"success": True, "message": "Выход выполнен успешно"})
+    response.delete_cookie(key="access_token")
+    return response
 
 @app.get("/api/auth/me")
 async def get_current_user_info(
@@ -764,17 +341,26 @@ async def get_current_user_info(
     try:
         token = request.cookies.get("access_token")
         if not token:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Требуется аутентификация"
+            )
         
         payload = verify_token(token)
         if not payload:
-            raise HTTPException(status_code=401, detail="Недействительный токен")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Недействительный токен"
+            )
         
         user_id = payload.get("user_id")
         user = db.query(User).filter(User.id == user_id).first()
         
         if not user:
-            raise HTTPException(status_code=404, detail="Пользователь не найден")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Пользователь не найден"
+            )
         
         return {
             "success": True,
@@ -792,7 +378,10 @@ async def get_current_user_info(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка загрузки пользователя: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки пользователя: {str(e)}"
+        )
 
 # ========== ПОЛЬЗОВАТЕЛИ ==========
 
@@ -800,11 +389,26 @@ async def get_current_user_info(
 async def get_users(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
+    online_only: bool = Query(False),
+    search: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     """Получение списка пользователей"""
     try:
         query = db.query(User)
+        
+        # Фильтр по онлайн статусу
+        if online_only:
+            query = query.filter(User.is_online == True)
+        
+        # Поиск по имени пользователя или отображаемому имени
+        if search:
+            search_filter = f"%{search}%"
+            query = query.filter(
+                (User.username.ilike(search_filter)) |
+                (User.display_name.ilike(search_filter))
+            )
+        
         total = query.count()
         users = query.order_by(User.username) \
                     .offset((page - 1) * limit) \
@@ -834,7 +438,107 @@ async def get_users(
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка загрузки пользователей: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки пользователей: {str(e)}"
+        )
+
+@app.get("/api/users/{user_id}")
+async def get_user_by_id(
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Получение информации о конкретном пользователе"""
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Пользователь не найден"
+            )
+        
+        return {
+            "success": True,
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "display_name": user.display_name,
+                "avatar_url": user.avatar_url,
+                "is_online": user.is_online,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "email": user.email
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки пользователя: {str(e)}"
+        )
+
+@app.put("/api/users/{user_id}")
+async def update_user(
+    user_id: int,
+    display_name: Optional[str] = Form(None),
+    avatar_url: Optional[str] = Form(None),
+    request: Request = None,
+    db: Session = Depends(get_db)
+):
+    """Обновление информации о пользователе"""
+    try:
+        # Проверяем аутентификацию
+        token = request.cookies.get("access_token") if request else None
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Требуется аутентификация"
+            )
+        
+        payload = verify_token(token)
+        if not payload or payload.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Нет прав для изменения этого пользователя"
+            )
+        
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Пользователь не найден"
+            )
+        
+        # Обновляем поля
+        if display_name is not None:
+            user.display_name = display_name
+        if avatar_url is not None:
+            user.avatar_url = avatar_url
+        
+        db.commit()
+        db.refresh(user)
+        
+        return {
+            "success": True,
+            "message": "Профиль обновлен",
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "display_name": user.display_name,
+                "avatar_url": user.avatar_url
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка обновления пользователя: {str(e)}"
+        )
 
 # ========== СООБЩЕНИЯ ==========
 
@@ -866,7 +570,8 @@ async def get_messages(
                 "sender": {
                     "id": sender.id if sender else None,
                     "username": sender.username if sender else "System",
-                    "display_name": sender.display_name if sender else None
+                    "display_name": sender.display_name if sender else None,
+                    "avatar_url": sender.avatar_url if sender else None
                 } if sender else {"username": "System"},
                 "created_at": msg.created_at.isoformat() if msg.created_at else None
             })
@@ -883,7 +588,180 @@ async def get_messages(
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка загрузки сообщений: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки сообщений: {str(e)}"
+        )
+
+@app.get("/api/messages/user/{user_id}")
+async def get_messages_by_user(
+    user_id: int,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db)
+):
+    """Получение сообщений от конкретного пользователя"""
+    try:
+        query = db.query(Message).filter(Message.from_user_id == user_id)
+        total = query.count()
+        messages = query.order_by(desc(Message.created_at)) \
+                       .offset((page - 1) * limit) \
+                       .limit(limit) \
+                       .all()
+        
+        sender = db.query(User).filter(User.id == user_id).first()
+        
+        messages_data = []
+        for msg in messages:
+            messages_data.append({
+                "id": msg.id,
+                "content": msg.content,
+                "type": msg.message_type,
+                "created_at": msg.created_at.isoformat() if msg.created_at else None
+            })
+        
+        return {
+            "success": True,
+            "sender": {
+                "id": sender.id if sender else None,
+                "username": sender.username if sender else None,
+                "display_name": sender.display_name if sender else None
+            },
+            "messages": messages_data,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "pages": (total + limit - 1) // limit
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки сообщений: {str(e)}"
+        )
+
+@app.post("/api/messages")
+async def create_message(
+    content: str = Form(...),
+    message_type: str = Form("text"),
+    request: Request = None,
+    db: Session = Depends(get_db)
+):
+    """Создание нового сообщения"""
+    try:
+        # Проверяем аутентификацию
+        token = request.cookies.get("access_token") if request else None
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Требуется аутентификация"
+            )
+        
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Недействительный токен"
+            )
+        
+        user_id = payload.get("user_id")
+        user = db.query(User).filter(User.id == user_id).first()
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Пользователь не найден"
+            )
+        
+        # Проверяем сообщение
+        if not content or len(content.strip()) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Сообщение не может быть пустым"
+            )
+        
+        # Создаем сообщение
+        message = Message(
+            from_user_id=user_id,
+            content=content.strip(),
+            message_type=message_type
+        )
+        
+        db.add(message)
+        db.commit()
+        db.refresh(message)
+        
+        return {
+            "success": True,
+            "message": "Сообщение отправлено",
+            "data": {
+                "id": message.id,
+                "content": message.content,
+                "type": message.message_type,
+                "sender": {
+                    "id": user.id,
+                    "username": user.username,
+                    "display_name": user.display_name,
+                    "avatar_url": user.avatar_url
+                },
+                "created_at": message.created_at.isoformat() if message.created_at else None
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка отправки сообщения: {str(e)}"
+        )
+
+# ========== СТАТИСТИКА ==========
+
+@app.get("/api/stats")
+async def get_statistics(
+    db: Session = Depends(get_db)
+):
+    """Получение статистики системы"""
+    try:
+        # Подсчет пользователей
+        total_users = db.query(func.count(User.id)).scalar()
+        online_users = db.query(func.count(User.id)).filter(User.is_online == True).scalar()
+        
+        # Подсчет сообщений
+        total_messages = db.query(func.count(Message.id)).scalar()
+        
+        # Последнее сообщение
+        last_message = db.query(Message).order_by(desc(Message.created_at)).first()
+        last_message_time = last_message.created_at if last_message else None
+        
+        return {
+            "success": True,
+            "stats": {
+                "users": {
+                    "total": total_users,
+                    "online": online_users,
+                    "offline": total_users - online_users
+                },
+                "messages": {
+                    "total": total_messages,
+                    "last_message_time": last_message_time.isoformat() if last_message_time else None
+                },
+                "system": {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "railway": os.environ.get("RAILWAY_ENVIRONMENT") is not None
+                }
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка получения статистики: {str(e)}"
+        )
 
 # ========== WEB SOCKET ==========
 
@@ -891,6 +769,18 @@ async def get_messages(
 async def websocket_endpoint(websocket: WebSocket, user_id: int):
     """WebSocket endpoint для реального времени"""
     await manager.connect(websocket, user_id)
+    
+    # Обновляем статус пользователя на онлайн
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.is_online = True
+            db.commit()
+    except:
+        pass
+    finally:
+        db.close()
     
     try:
         while True:
@@ -923,37 +813,31 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
                                 }))
                     finally:
                         db.close()
+            elif message_type == "typing":
+                # Пересылаем информацию о наборе текста
+                for uid, ws_conn in manager.active_connections.items():
+                    if uid != user_id:
+                        await ws_conn.send_text(json.dumps({
+                            "type": "typing",
+                            "user_id": user_id,
+                            "is_typing": message_data.get("is_typing", True)
+                        }))
                         
     except WebSocketDisconnect:
         print(f"📴 User disconnected: {user_id}")
         manager.disconnect(user_id)
-
-# ========== СЕРВИС СТАТИЧЕСКИХ ФАЙЛОВ ==========
-
-@app.get("/{filename:path}")
-async def serve_static_files(filename: str):
-    """Сервит статические файлы из фронтенд директории"""
-    # Проверяем безопасность пути
-    safe_path = Path(filename).name
-    
-    # Пробуем найти файл во фронтенд директории
-    file_path = frontend_dir / safe_path
-    
-    if file_path.exists() and file_path.is_file():
-        return FileResponse(str(file_path))
-    
-    # Если файл не найден, проверяем стандартные расширения
-    if "." not in safe_path:
-        # Пробуем добавить .html
-        html_path = frontend_dir / f"{safe_path}.html"
-        if html_path.exists():
-            return FileResponse(str(html_path))
-    
-    # Если ничего не найдено, возвращаем 404
-    return JSONResponse(
-        status_code=404,
-        content={"detail": "File not found"}
-    )
+        
+        # Обновляем статус пользователя на офлайн
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == user_id).first()
+            if user:
+                user.is_online = False
+                db.commit()
+        except:
+            pass
+        finally:
+            db.close()
 
 # ========== ЗАПУСК СЕРВЕРА ==========
 
