@@ -56,25 +56,3 @@ def get_db():
     finally:
         db.close()
 
-# Функция для инициализации базы данных
-def init_database():
-    """Создает все таблицы в базе данных"""
-    try:
-        # Импортируем модели чтобы SQLAlchemy их зарегистрировал
-        from models import (
-            User, Message, Group, GroupMember, Channel, 
-            Subscription, File, Reaction, Notification
-        )
-        
-        # Создаем все таблицы
-        Base.metadata.create_all(bind=engine)
-        print("✅ Database tables created successfully")
-        
-    except Exception as e:
-        print(f"⚠️  Error importing models: {e}")
-        try:
-            # Пытаемся создать таблицы без импорта моделей
-            Base.metadata.create_all(bind=engine)
-            print("✅ Database tables created successfully (without models import)")
-        except Exception as e2:
-            print(f"❌ Error creating tables: {e2}")
