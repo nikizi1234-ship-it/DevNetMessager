@@ -1,20 +1,19 @@
 from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, declarative_base
 import os
+
+# Создаем Base здесь, чтобы импортировать во всех файлах
+Base = declarative_base()
 
 # Определяем среду выполнения
 IS_RAILWAY = os.environ.get("RAILWAY_ENVIRONMENT") is not None
-IS_PRODUCTION = os.environ.get("ENVIRONMENT") == "production"
 
 # Выбираем БД в зависимости от среды
 if IS_RAILWAY:
-    # На Railway используем in-memory SQLite
     DATABASE_URL = "sqlite:///:memory:"
     print("🚂 Running on Railway - using IN-MEMORY SQLite")
     print("⚠️  WARNING: All data will be lost on app restart!")
 else:
-    # Локально используем файловую SQLite
     DATABASE_URL = "sqlite:///./devnet.db"
     print("💻 Running locally - using file-based SQLite")
 
@@ -26,7 +25,7 @@ try:
         engine = create_engine(
             DATABASE_URL,
             connect_args={"check_same_thread": False},
-            echo=False  # Отключаем логи SQL для производительности
+            echo=False
         )
         print("✅ In-memory SQLite engine created")
     else:
@@ -34,7 +33,7 @@ try:
         engine = create_engine(
             DATABASE_URL,
             connect_args={"check_same_thread": False},
-            echo=True  # Включаем логи для отладки
+            echo=True
         )
         print("✅ File-based SQLite engine created")
         
@@ -45,9 +44,6 @@ except Exception as e:
 # Создаем сессию для работы с базой
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Базовый класс для моделей
-Base = declarative_base()
-
 # Функция для получения сессии БД
 def get_db():
     db = SessionLocal()
@@ -56,3 +52,20 @@ def get_db():
     finally:
         db.close()
 
+# Функция для инициализации базы данных
+def init_database():
+    """Создает все таблицы в базе данных"""
+    try:
+        # Импортируем модели здесь, после создания Base
+        from models import (
+            User, Group, Channel, Subscription, 
+            GroupMember, Message, Reaction, File, Notification
+        )
+        
+        # Создаем все таблицы
+        Base.metadata.create_all(bind=engine)
+        print("✅ Database tables created successfully")
+        
+    except Exception as e:
+        print(f"❌ Error initializing database: {e}")
+        raise
