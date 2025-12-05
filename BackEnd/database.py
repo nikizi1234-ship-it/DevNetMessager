@@ -55,3 +55,40 @@ def get_db():
         yield db
     finally:
         db.close()
+
+# Функция для инициализации базы данных
+def init_database():
+    """Создает все таблицы в базе данных"""
+    try:
+        # Импортируем модели чтобы SQLAlchemy их зарегистрировал
+        from models import (
+            User, Message, Group, GroupMember, Channel, 
+            Subscription, File, Reaction, Notification
+        )
+        
+        # Создаем все таблицы
+        Base.metadata.create_all(bind=engine)
+        print("✅ Database tables created successfully")
+        
+        # Создаем тестового пользователя если нужно
+        db = SessionLocal()
+        try:
+            # Проверяем, есть ли пользователи
+            user_count = db.query(User).count()
+            if user_count == 0:
+                print("📝 No users found in database")
+        finally:
+            db.close()
+            
+    except Exception as e:
+        print(f"❌ Error initializing database: {e}")
+        raise
+
+# Функция для очистки базы данных (только для тестирования)
+def drop_database():
+    """Удаляет все таблицы (только для разработки!)"""
+    try:
+        Base.metadata.drop_all(bind=engine)
+        print("🗑️  All tables dropped")
+    except Exception as e:
+        print(f"❌ Error dropping database: {e}")
