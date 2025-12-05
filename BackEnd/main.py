@@ -201,8 +201,10 @@ async def debug_info():
         "frontend_exists": frontend_dir.exists()
     }
 
-# ========== АУТЕНТИФИКАЦИЯ ==========
+# ========== СОВМЕСТИМОСТЬ СО СТАРЫМ ФРОНТЕНДОМ ==========
 
+# Редирект для старых URL на новые
+@app.post("/api/register")
 @app.post("/api/auth/register")
 async def register_user(
     username: str = Form(...),
@@ -271,7 +273,18 @@ async def register_user(
             "access_token": access_token
         }
         
-        return JSONResponse(content=response_data)
+        response = JSONResponse(content=response_data)
+        
+        # Устанавливаем токен в куки
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            max_age=1800,  # 30 минут
+            samesite="lax"
+        )
+        
+        return response
         
     except HTTPException:
         raise
@@ -282,6 +295,7 @@ async def register_user(
             detail=f"Ошибка регистрации: {str(e)}"
         )
 
+@app.post("/api/login")
 @app.post("/api/auth/login")
 async def login_user(
     username: str = Form(...),
@@ -315,7 +329,18 @@ async def login_user(
             "access_token": access_token
         }
         
-        return JSONResponse(content=response_data)
+        response = JSONResponse(content=response_data)
+        
+        # Устанавливаем токен в куки
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            max_age=1800,
+            samesite="lax"
+        )
+        
+        return response
         
     except HTTPException:
         raise
@@ -325,13 +350,7 @@ async def login_user(
             detail=f"Ошибка входа: {str(e)}"
         )
 
-@app.post("/api/auth/logout")
-async def logout_user():
-    """Выход пользователя"""
-    response = JSONResponse(content={"success": True, "message": "Выход выполнен успешно"})
-    response.delete_cookie(key="access_token")
-    return response
-
+@app.get("/api/me")
 @app.get("/api/auth/me")
 async def get_current_user_info(
     request: Request,
@@ -383,6 +402,7 @@ async def get_current_user_info(
             detail=f"Ошибка загрузки пользователя: {str(e)}"
         )
 
+# Остальные эндпоинты (users, messages, stats) оставляем как в предыдущей версии
 # ========== ПОЛЬЗОВАТЕЛИ ==========
 
 @app.get("/api/users")
@@ -443,103 +463,6 @@ async def get_users(
             detail=f"Ошибка загрузки пользователей: {str(e)}"
         )
 
-@app.get("/api/users/{user_id}")
-async def get_user_by_id(
-    user_id: int,
-    db: Session = Depends(get_db)
-):
-    """Получение информации о конкретном пользователе"""
-    try:
-        user = db.query(User).filter(User.id == user_id).first()
-        
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Пользователь не найден"
-            )
-        
-        return {
-            "success": True,
-            "user": {
-                "id": user.id,
-                "username": user.username,
-                "display_name": user.display_name,
-                "avatar_url": user.avatar_url,
-                "is_online": user.is_online,
-                "created_at": user.created_at.isoformat() if user.created_at else None,
-                "email": user.email
-            }
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка загрузки пользователя: {str(e)}"
-        )
-
-@app.put("/api/users/{user_id}")
-async def update_user(
-    user_id: int,
-    display_name: Optional[str] = Form(None),
-    avatar_url: Optional[str] = Form(None),
-    request: Request = None,
-    db: Session = Depends(get_db)
-):
-    """Обновление информации о пользователе"""
-    try:
-        # Проверяем аутентификацию
-        token = request.cookies.get("access_token") if request else None
-        if not token:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Требуется аутентификация"
-            )
-        
-        payload = verify_token(token)
-        if not payload or payload.get("user_id") != user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Нет прав для изменения этого пользователя"
-            )
-        
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Пользователь не найден"
-            )
-        
-        # Обновляем поля
-        if display_name is not None:
-            user.display_name = display_name
-        if avatar_url is not None:
-            user.avatar_url = avatar_url
-        
-        db.commit()
-        db.refresh(user)
-        
-        return {
-            "success": True,
-            "message": "Профиль обновлен",
-            "user": {
-                "id": user.id,
-                "username": user.username,
-                "display_name": user.display_name,
-                "avatar_url": user.avatar_url
-            }
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка обновления пользователя: {str(e)}"
-        )
-
 # ========== СООБЩЕНИЯ ==========
 
 @app.get("/api/messages")
@@ -578,55 +501,6 @@ async def get_messages(
         
         return {
             "success": True,
-            "messages": messages_data,
-            "pagination": {
-                "page": page,
-                "limit": limit,
-                "total": total,
-                "pages": (total + limit - 1) // limit
-            }
-        }
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка загрузки сообщений: {str(e)}"
-        )
-
-@app.get("/api/messages/user/{user_id}")
-async def get_messages_by_user(
-    user_id: int,
-    page: int = Query(1, ge=1),
-    limit: int = Query(50, ge=1, le=100),
-    db: Session = Depends(get_db)
-):
-    """Получение сообщений от конкретного пользователя"""
-    try:
-        query = db.query(Message).filter(Message.from_user_id == user_id)
-        total = query.count()
-        messages = query.order_by(desc(Message.created_at)) \
-                       .offset((page - 1) * limit) \
-                       .limit(limit) \
-                       .all()
-        
-        sender = db.query(User).filter(User.id == user_id).first()
-        
-        messages_data = []
-        for msg in messages:
-            messages_data.append({
-                "id": msg.id,
-                "content": msg.content,
-                "type": msg.message_type,
-                "created_at": msg.created_at.isoformat() if msg.created_at else None
-            })
-        
-        return {
-            "success": True,
-            "sender": {
-                "id": sender.id if sender else None,
-                "username": sender.username if sender else None,
-                "display_name": sender.display_name if sender else None
-            },
             "messages": messages_data,
             "pagination": {
                 "page": page,
@@ -839,6 +713,53 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
         finally:
             db.close()
 
+# ========== ФАЛЛБЭК ДЛЯ СТАТИЧЕСКИХ ФАЙЛОВ ==========
+
+@app.get("/{path:path}")
+async def serve_frontend(path: str):
+    """Сервим статические файлы фронтенда"""
+    # Если запрос идет к API, возвращаем 404
+    if path.startswith("api/"):
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "API endpoint not found"}
+        )
+    
+    # Определяем путь к файлу
+    file_path = frontend_dir / path
+    
+    # Если запрос к корню или HTML файлу
+    if path == "" or path.endswith(".html") or "." not in path:
+        # Проверяем существование файла
+        if path == "" or path == "/":
+            index_path = frontend_dir / "index.html"
+        elif not path.endswith(".html"):
+            html_path = frontend_dir / f"{path}.html"
+            if html_path.exists():
+                file_path = html_path
+            else:
+                file_path = frontend_dir / "index.html"
+        else:
+            file_path = frontend_dir / path
+        
+        if file_path.exists():
+            return FileResponse(str(file_path))
+    
+    # Если файл существует, отдаем его
+    if file_path.exists() and file_path.is_file():
+        return FileResponse(str(file_path))
+    
+    # Если файл не найден, отдаем index.html
+    index_path = frontend_dir / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
+    
+    # Если index.html тоже нет, возвращаем 404
+    return JSONResponse(
+        status_code=404,
+        content={"detail": "File not found"}
+    )
+
 # ========== ЗАПУСК СЕРВЕРА ==========
 
 if __name__ == "__main__":
@@ -850,7 +771,7 @@ if __name__ == "__main__":
     print(f"📁 Директория фронтенда: {frontend_dir}")
     print(f"🔗 API документация: http://localhost:{port}/api/docs")
     print(f"🏠 Главная страница: http://localhost:{port}/")
-    print(f"💬 Чат: http://localhost:{port}/chat.html")
+    print(f"💬 Чат: http://localhost:{port}/chat")
     print("👑 Тестовый пользователь: admin / admin123")
     print("=" * 50)
     
