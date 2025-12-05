@@ -1,7 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Form, Request, File, UploadFile, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse, PlainTextResponse
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, desc, asc, func as sql_func
 import json
@@ -119,6 +119,81 @@ else:
 # Монтируем директорию загрузок
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
+# ========== ДИАГНОСТИЧЕСКАЯ СТРАНИЦА ==========
+
+@app.get("/api/debug")
+async def debug_info():
+    """Страница диагностики и тестирования API"""
+    db = SessionLocal()
+    try:
+        # Проверка базы данных
+        db_status = "OK"
+        try:
+            db.execute("SELECT 1")
+            users_count = db.query(User).count()
+            groups_count = db.query(Group).count()
+            channels_count = db.query(Channel).count()
+        except Exception as e:
+            db_status = f"ERROR: {str(e)}"
+            users_count = groups_count = channels_count = 0
+        
+        # Проверка директорий
+        dirs = {
+            "uploads": UPLOAD_DIR.exists(),
+            "frontend": frontend_dir.exists(),
+            "current": current_dir.exists()
+        }
+        
+        # Проверка зависимостей
+        deps = {}
+        try:
+            import fastapi
+            deps["fastapi"] = f"OK ({fastapi.__version__})"
+        except ImportError:
+            deps["fastapi"] = "MISSING"
+            
+        try:
+            import sqlalchemy
+            deps["sqlalchemy"] = f"OK ({sqlalchemy.__version__})"
+        except ImportError:
+            deps["sqlalchemy"] = "MISSING"
+            
+        try:
+            import passlib
+            deps["passlib"] = "OK"
+        except ImportError:
+            deps["passlib"] = "MISSING"
+        
+        return {
+            "status": "online",
+            "timestamp": datetime.utcnow().isoformat(),
+            "environment": {
+                "is_railway": os.environ.get("RAILWAY_ENVIRONMENT") is not None,
+                "port": os.environ.get("PORT", 8000),
+                "python_version": sys.version
+            },
+            "database": {
+                "status": db_status,
+                "url": str(db.bind.url) if hasattr(db, 'bind') else "unknown",
+                "users": users_count,
+                "groups": groups_count,
+                "channels": channels_count
+            },
+            "directories": dirs,
+            "dependencies": deps,
+            "endpoints": [
+                {"path": "/", "method": "GET", "description": "Главная страница"},
+                {"path": "/api/health", "method": "GET", "description": "Проверка здоровья"},
+                {"path": "/api/debug", "method": "GET", "description": "Эта диагностическая страница"},
+                {"path": "/api/auth/register", "method": "POST", "description": "Регистрация"},
+                {"path": "/api/auth/login", "method": "POST", "description": "Вход"},
+                {"path": "/api/auth/me", "method": "GET", "description": "Текущий пользователь"},
+                {"path": "/api/docs", "method": "GET", "description": "Документация API"}
+            ]
+        }
+    finally:
+        db.close()
+
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
 def get_current_user(request: Request, db: Session = Depends(get_db)):
@@ -213,11 +288,9 @@ async def root():
 async def health_check():
     """Проверка здоровья API"""
     try:
-        # Простая проверка базы данных
         db = SessionLocal()
         try:
-            # Пробуем выполнить простой запрос
-            result = db.execute("SELECT 1")
+            db.execute("SELECT 1")
             db_status = "connected"
         except Exception as e:
             db_status = f"error: {str(e)}"
@@ -230,7 +303,7 @@ async def health_check():
             "version": "5.0.0",
             "timestamp": datetime.utcnow().isoformat(),
             "database": db_status,
-            "features": ["auth", "websocket", "groups", "channels", "media", "reactions"]
+            "environment": "railway" if os.environ.get("RAILWAY_ENVIRONMENT") else "local"
         }
     except Exception as e:
         return {
@@ -238,6 +311,30 @@ async def health_check():
             "error": str(e),
             "timestamp": datetime.utcnow().isoformat()
         }
+
+@app.get("/api/test")
+async def test_endpoints():
+    """Тестирование основных endpoint'ов"""
+    endpoints = [
+        ("GET", "/api/health", "Проверка здоровья"),
+        ("GET", "/api/debug", "Диагностика"),
+        ("GET", "/api/docs", "Документация")
+    ]
+    
+    results = []
+    for method, path, description in endpoints:
+        results.append({
+            "method": method,
+            "path": path,
+            "description": description,
+            "status": "available"
+        })
+    
+    return {
+        "success": True,
+        "endpoints": results,
+        "message": "API работает корректно"
+    }
 
 # ========== АУТЕНТИФИКАЦИЯ ==========
 
@@ -261,6 +358,12 @@ async def register_user(
         if existing_email:
             raise HTTPException(status_code=400, detail="Email уже используется")
         
+        # Проверяем пароль
+        if len(password) < 6:
+            raise HTTPException(status_code=400, detail="Пароль должен быть не менее 6 символов")
+        if len(password) > 72:
+            raise HTTPException(status_code=400, detail="Пароль должен быть не более 72 символов")
+        
         # Создаем пользователя
         user = User(
             username=username,
@@ -276,7 +379,7 @@ async def register_user(
         # Создаем токен
         access_token = create_access_token(data={"user_id": user.id, "username": user.username})
         
-        return {
+        response = JSONResponse({
             "success": True,
             "user": {
                 "id": user.id,
@@ -285,8 +388,20 @@ async def register_user(
                 "email": user.email,
                 "avatar_url": user.avatar_url
             },
-            "access_token": access_token
-        }
+            "access_token": access_token,
+            "message": "Регистрация прошла успешно"
+        })
+        
+        # Устанавливаем cookie с токеном
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            max_age=7*24*60*60,  # 7 дней
+            samesite="lax"
+        )
+        
+        return response
         
     except HTTPException:
         raise
@@ -309,7 +424,7 @@ async def login_user(
         # Создаем токен
         access_token = create_access_token(data={"user_id": user.id, "username": user.username})
         
-        return {
+        response = JSONResponse({
             "success": True,
             "user": {
                 "id": user.id,
@@ -319,8 +434,20 @@ async def login_user(
                 "avatar_url": user.avatar_url,
                 "role": user.role
             },
-            "access_token": access_token
-        }
+            "access_token": access_token,
+            "message": "Вход выполнен успешно"
+        })
+        
+        # Устанавливаем cookie с токеном
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            max_age=7*24*60*60,  # 7 дней
+            samesite="lax"
+        )
+        
+        return response
         
     except HTTPException:
         raise
@@ -360,6 +487,77 @@ async def get_current_user_info(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка загрузки пользователя: {str(e)}")
 
+@app.post("/api/auth/logout")
+async def logout_user():
+    """Выход пользователя"""
+    response = JSONResponse({
+        "success": True,
+        "message": "Вы успешно вышли"
+    })
+    response.delete_cookie(key="access_token")
+    return response
+
+# ========== ПОЛЬЗОВАТЕЛИ ==========
+
+@app.get("/api/users")
+async def get_users(
+    request: Request,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    search: str = Query(None),
+    db: Session = Depends(get_db)
+):
+    """Получение списка пользователей"""
+    try:
+        user = get_current_user(request, db)
+        if not user:
+            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+        
+        query = db.query(User).filter(User.id != user.id)
+        
+        if search:
+            query = query.filter(
+                or_(
+                    User.username.ilike(f"%{search}%"),
+                    User.display_name.ilike(f"%{search}%"),
+                    User.email.ilike(f"%{search}%")
+                )
+            )
+        
+        total = query.count()
+        users = query.order_by(User.username) \
+                   .offset((page - 1) * limit) \
+                   .limit(limit) \
+                   .all()
+        
+        users_data = []
+        for u in users:
+            users_data.append({
+                "id": u.id,
+                "username": u.username,
+                "display_name": u.display_name,
+                "avatar_url": u.avatar_url,
+                "bio": u.bio,
+                "is_online": u.is_online,
+                "created_at": u.created_at.isoformat() if u.created_at else None
+            })
+        
+        return {
+            "success": True,
+            "users": users_data,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "pages": (total + limit - 1) // limit
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка загрузки пользователей: {str(e)}")
+
 # ========== КАНАЛЫ ==========
 
 @app.get("/api/channels")
@@ -373,26 +571,29 @@ async def get_channels(
     try:
         user = get_current_user(request, db)
         if not user:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+            # Возвращаем только публичные каналы для неавторизованных
+            query = db.query(Channel).filter(Channel.is_public == True)
+            is_authenticated = False
+        else:
+            query = db.query(Channel).filter(Channel.is_public == True)
+            is_authenticated = True
         
-        # Получаем каналы
-        query = db.query(Channel).filter(Channel.is_public == True)
         total = query.count()
         channels = query.order_by(desc(Channel.is_official), desc(Channel.last_activity)) \
                        .offset((page - 1) * limit) \
                        .limit(limit) \
                        .all()
         
-        # Проверяем подписки
-        subscriptions = db.query(Subscription).filter(Subscription.user_id == user.id).all()
-        subscribed_channel_ids = [sub.channel_id for sub in subscriptions]
+        # Проверяем подписки если пользователь авторизован
+        subscribed_channel_ids = []
+        if is_authenticated:
+            subscriptions = db.query(Subscription).filter(Subscription.user_id == user.id).all()
+            subscribed_channel_ids = [sub.channel_id for sub in subscriptions]
         
         channels_data = []
         for channel in channels:
-            # Получаем количество подписчиков
             subscribers_count = db.query(Subscription).filter(Subscription.channel_id == channel.id).count()
             
-            # Получаем последнее сообщение
             last_message = db.query(Message).filter(Message.channel_id == channel.id) \
                 .order_by(Message.created_at.desc()).first()
             
@@ -425,250 +626,8 @@ async def get_channels(
             }
         }
         
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка загрузки каналов: {str(e)}")
-
-@app.post("/api/channels")
-async def create_channel(
-    request: Request,
-    name: str = Form(...),
-    description: str = Form(None),
-    is_public: bool = Form(True),
-    db: Session = Depends(get_db)
-):
-    """Создание нового канала"""
-    try:
-        user = get_current_user(request, db)
-        if not user:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        # Проверяем имя канала
-        if len(name) < 3:
-            raise HTTPException(status_code=400, detail="Название канала должно быть не менее 3 символов")
-        
-        if len(name) > 100:
-            raise HTTPException(status_code=400, detail="Название канала должно быть не более 100 символов")
-        
-        # Проверяем уникальность имени
-        existing = db.query(Channel).filter(Channel.name == name).first()
-        if existing:
-            raise HTTPException(status_code=400, detail="Канал с таким именем уже существует")
-        
-        # Создаем канал
-        channel = Channel(
-            name=name,
-            description=description,
-            is_public=is_public,
-            is_official=False,  # Только админ может создавать официальные каналы
-            created_by=user.id
-        )
-        
-        db.add(channel)
-        db.commit()
-        db.refresh(channel)
-        
-        # Автоматически подписываем создателя
-        subscription = Subscription(
-            channel_id=channel.id,
-            user_id=user.id,
-            notifications=True
-        )
-        db.add(subscription)
-        db.commit()
-        
-        return {
-            "success": True,
-            "channel": {
-                "id": channel.id,
-                "name": channel.name,
-                "description": channel.description,
-                "avatar_url": channel.avatar_url,
-                "is_public": channel.is_public,
-                "is_official": channel.is_official,
-                "created_by": channel.created_by,
-                "created_at": channel.created_at.isoformat() if channel.created_at else None
-            },
-            "message": "Канал успешно создан"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Ошибка создания канала: {str(e)}")
-
-@app.post("/api/channels/{channel_id}/subscribe")
-async def subscribe_to_channel(
-    channel_id: int,
-    request: Request,
-    db: Session = Depends(get_db)
-):
-    """Подписка на канал"""
-    try:
-        user = get_current_user(request, db)
-        if not user:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        # Проверяем существование канала
-        channel = db.query(Channel).filter(Channel.id == channel_id).first()
-        if not channel:
-            raise HTTPException(status_code=404, detail="Канал не найден")
-        
-        if not channel.is_public:
-            raise HTTPException(status_code=403, detail="Этот канал является приватным")
-        
-        # Проверяем, подписан ли уже пользователь
-        existing_sub = db.query(Subscription).filter(
-            Subscription.channel_id == channel_id,
-            Subscription.user_id == user.id
-        ).first()
-        
-        if existing_sub:
-            return {
-                "success": True,
-                "message": "Вы уже подписаны на этот канал"
-            }
-        
-        # Создаем подписку
-        subscription = Subscription(
-            channel_id=channel_id,
-            user_id=user.id,
-            notifications=True
-        )
-        
-        db.add(subscription)
-        db.commit()
-        
-        # Обновляем активность канала
-        channel.last_activity = datetime.utcnow()
-        db.commit()
-        
-        return {
-            "success": True,
-            "message": "Вы успешно подписались на канал"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Ошибка подписки: {str(e)}")
-
-@app.post("/api/channels/{channel_id}/unsubscribe")
-async def unsubscribe_from_channel(
-    channel_id: int,
-    request: Request,
-    db: Session = Depends(get_db)
-):
-    """Отписка от канала"""
-    try:
-        user = get_current_user(request, db)
-        if not user:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        # Находим подписку
-        subscription = db.query(Subscription).filter(
-            Subscription.channel_id == channel_id,
-            Subscription.user_id == user.id
-        ).first()
-        
-        if not subscription:
-            raise HTTPException(status_code=404, detail="Подписка не найдена")
-        
-        # Удаляем подписку
-        db.delete(subscription)
-        db.commit()
-        
-        return {
-            "success": True,
-            "message": "Вы отписались от канала"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Ошибка отписки: {str(e)}")
-
-@app.get("/api/channels/{channel_id}")
-async def get_channel_info(
-    channel_id: int,
-    request: Request,
-    db: Session = Depends(get_db)
-):
-    """Получение информации о канале"""
-    try:
-        user = get_current_user(request, db)
-        if not user:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        # Получаем канал
-        channel = db.query(Channel).filter(Channel.id == channel_id).first()
-        if not channel:
-            raise HTTPException(status_code=404, detail="Канал не найден")
-        
-        if not channel.is_public:
-            # Проверяем подписку
-            subscription = db.query(Subscription).filter(
-                Subscription.channel_id == channel_id,
-                Subscription.user_id == user.id
-            ).first()
-            if not subscription:
-                raise HTTPException(status_code=403, detail="Доступ запрещен")
-        
-        # Получаем количество подписчиков
-        subscribers_count = db.query(Subscription).filter(Subscription.channel_id == channel_id).count()
-        
-        # Получаем количество сообщений
-        messages_count = db.query(Message).filter(Message.channel_id == channel_id).count()
-        
-        # Проверяем подписку пользователя
-        is_subscribed = False
-        subscription = db.query(Subscription).filter(
-            Subscription.channel_id == channel_id,
-            Subscription.user_id == user.id
-        ).first()
-        is_subscribed = subscription is not None
-        
-        # Получаем последние сообщения
-        last_messages = db.query(Message).filter(Message.channel_id == channel_id) \
-            .order_by(Message.created_at.desc()).limit(10).all()
-        
-        return {
-            "success": True,
-            "channel": {
-                "id": channel.id,
-                "name": channel.name,
-                "description": channel.description,
-                "avatar_url": channel.avatar_url,
-                "banner_url": channel.banner_url,
-                "is_public": channel.is_public,
-                "is_official": channel.is_official,
-                "created_by": channel.created_by,
-                "created_at": channel.created_at.isoformat() if channel.created_at else None,
-                "last_activity": channel.last_activity.isoformat() if channel.last_activity else None,
-                "subscribers_count": subscribers_count,
-                "messages_count": messages_count,
-                "is_subscribed": is_subscribed
-            },
-            "recent_messages": [
-                {
-                    "id": msg.id,
-                    "content": msg.content,
-                    "type": msg.message_type,
-                    "media_url": msg.media_url,
-                    "created_at": msg.created_at.isoformat() if msg.created_at else None
-                }
-                for msg in last_messages
-            ]
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка загрузки канала: {str(e)}")
 
 # ========== ГРУППЫ ==========
 
@@ -683,10 +642,20 @@ async def get_groups(
     try:
         user = get_current_user(request, db)
         if not user:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
+            # Возвращаем только публичные группы для неавторизованных
+            query = db.query(Group).filter(Group.is_public == True)
+            is_authenticated = False
+        else:
+            # Для авторизованных показываем их группы + публичные
+            user_group_ids = [gm.group_id for gm in db.query(GroupMember).filter(GroupMember.user_id == user.id).all()]
+            query = db.query(Group).filter(
+                or_(
+                    Group.id.in_(user_group_ids),
+                    Group.is_public == True
+                )
+            )
+            is_authenticated = True
         
-        # Получаем группы пользователя
-        query = db.query(Group).join(GroupMember).filter(GroupMember.user_id == user.id)
         total = query.count()
         groups = query.order_by(desc(Group.last_activity)) \
                      .offset((page - 1) * limit) \
@@ -695,14 +664,12 @@ async def get_groups(
         
         groups_data = []
         for group in groups:
-            # Получаем количество участников
             members_count = db.query(GroupMember).filter(GroupMember.group_id == group.id).count()
             
-            # Получаем последнее сообщение
             last_message = db.query(Message).filter(Message.group_id == group.id) \
                 .order_by(Message.created_at.desc()).first()
             
-            groups_data.append({
+            group_info = {
                 "id": group.id,
                 "name": group.name,
                 "description": group.description,
@@ -714,15 +681,22 @@ async def get_groups(
                 "created_at": group.created_at.isoformat() if group.created_at else None,
                 "last_activity": group.last_activity.isoformat() if group.last_activity else None,
                 "members_count": members_count,
-                "my_role": db.query(GroupMember).filter(
-                    GroupMember.group_id == group.id,
-                    GroupMember.user_id == user.id
-                ).first().role,
                 "last_message": {
                     "content": last_message.content if last_message else None,
                     "timestamp": last_message.created_at.isoformat() if last_message else None
                 } if last_message else None
-            })
+            }
+            
+            # Добавляем информацию о членстве для авторизованных
+            if is_authenticated:
+                membership = db.query(GroupMember).filter(
+                    GroupMember.group_id == group.id,
+                    GroupMember.user_id == user.id
+                ).first()
+                group_info["is_member"] = membership is not None
+                group_info["my_role"] = membership.role if membership else None
+            
+            groups_data.append(group_info)
         
         return {
             "success": True,
@@ -735,897 +709,357 @@ async def get_groups(
             }
         }
         
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка загрузки групп: {str(e)}")
 
-@app.post("/api/groups")
-async def create_group(
-    request: Request,
-    name: str = Form(...),
-    description: str = Form(None),
-    is_public: bool = Form(True),
-    db: Session = Depends(get_db)
-):
-    """Создание новой группы"""
-    try:
-        user = get_current_user(request, db)
-        if not user:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        # Проверяем имя группы
-        if len(name) < 3:
-            raise HTTPException(status_code=400, detail="Название группы должно быть не менее 3 символов")
-        
-        if len(name) > 100:
-            raise HTTPException(status_code=400, detail="Название группы должно быть не более 100 символов")
-        
-        # Проверяем уникальность имени
-        existing = db.query(Group).filter(Group.name == name).first()
-        if existing:
-            raise HTTPException(status_code=400, detail="Группа с таким именем уже существует")
-        
-        # Создаем группу
-        group = Group(
-            name=name,
-            description=description,
-            is_public=is_public,
-            created_by=user.id
-        )
-        
-        db.add(group)
-        db.commit()
-        db.refresh(group)
-        
-        # Добавляем создателя как владельца
-        group_member = GroupMember(
-            group_id=group.id,
-            user_id=user.id,
-            role="owner"
-        )
-        db.add(group_member)
-        db.commit()
-        
-        return {
-            "success": True,
-            "group": {
-                "id": group.id,
-                "name": group.name,
-                "description": group.description,
-                "avatar_url": group.avatar_url,
-                "is_public": group.is_public,
-                "created_by": group.created_by,
-                "created_at": group.created_at.isoformat() if group.created_at else None
-            },
-            "message": "Группа успешно создана"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Ошибка создания группы: {str(e)}")
+# ========== ВЕБ СТРАНИЦЫ ДЛЯ ФРОНТЕНДА ==========
 
-@app.post("/api/groups/{group_id}/join")
-async def join_group(
-    group_id: int,
-    request: Request,
-    db: Session = Depends(get_db)
-):
-    """Вступление в группу"""
-    try:
-        user = get_current_user(request, db)
-        if not user:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        # Проверяем существование группы
-        group = db.query(Group).filter(Group.id == group_id).first()
-        if not group:
-            raise HTTPException(status_code=404, detail="Группа не найдена")
-        
-        if not group.is_public:
-            raise HTTPException(status_code=403, detail="Эта группа является приватной")
-        
-        # Проверяем, является ли пользователь уже участником
-        existing_member = db.query(GroupMember).filter(
-            GroupMember.group_id == group_id,
-            GroupMember.user_id == user.id
-        ).first()
-        
-        if existing_member:
-            return {
-                "success": True,
-                "message": "Вы уже состоите в этой группе"
+@app.get("/register")
+async def serve_register():
+    """Страница регистрации"""
+    register_path = frontend_dir / "register.html"
+    if register_path.exists():
+        return FileResponse(str(register_path))
+    
+    # Создаем простую страницу если файла нет
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>DevNet - Регистрация</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
             }
-        
-        # Проверяем максимальное количество участников
-        members_count = db.query(GroupMember).filter(GroupMember.group_id == group_id).count()
-        if group.max_members and members_count >= group.max_members:
-            raise HTTPException(status_code=400, detail="Группа достигла максимального количества участников")
-        
-        # Добавляем пользователя в группу
-        group_member = GroupMember(
-            group_id=group_id,
-            user_id=user.id,
-            role="member"
-        )
-        
-        db.add(group_member)
-        db.commit()
-        
-        # Обновляем активность группы
-        group.last_activity = datetime.utcnow()
-        db.commit()
-        
-        return {
-            "success": True,
-            "message": "Вы успешно вступили в группу"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Ошибка вступления в группу: {str(e)}")
-
-@app.get("/api/groups/{group_id}")
-async def get_group_info(
-    group_id: int,
-    request: Request,
-    db: Session = Depends(get_db)
-):
-    """Получение информации о группе"""
-    try:
-        user = get_current_user(request, db)
-        if not user:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        # Получаем группу
-        group = db.query(Group).filter(Group.id == group_id).first()
-        if not group:
-            raise HTTPException(status_code=404, detail="Группа не найдена")
-        
-        # Проверяем, является ли пользователь участником
-        membership = db.query(GroupMember).filter(
-            GroupMember.group_id == group_id,
-            GroupMember.user_id == user.id
-        ).first()
-        
-        if not membership and not group.is_public:
-            raise HTTPException(status_code=403, detail="Доступ запрещен")
-        
-        # Получаем количество участников
-        members_count = db.query(GroupMember).filter(GroupMember.group_id == group_id).count()
-        
-        # Получаем список участников
-        members = db.query(GroupMember, User).join(User, GroupMember.user_id == User.id) \
-            .filter(GroupMember.group_id == group_id) \
-            .order_by(GroupMember.role.desc(), GroupMember.joined_at) \
-            .limit(50) \
-            .all()
-        
-        # Получаем последние сообщения
-        last_messages = db.query(Message).filter(Message.group_id == group_id) \
-            .order_by(Message.created_at.desc()).limit(10).all()
-        
-        return {
-            "success": True,
-            "group": {
-                "id": group.id,
-                "name": group.name,
-                "description": group.description,
-                "avatar_url": group.avatar_url,
-                "banner_url": group.banner_url,
-                "is_public": group.is_public,
-                "max_members": group.max_members,
-                "created_by": group.created_by,
-                "created_at": group.created_at.isoformat() if group.created_at else None,
-                "last_activity": group.last_activity.isoformat() if group.last_activity else None,
-                "members_count": members_count,
-                "is_member": membership is not None,
-                "my_role": membership.role if membership else None
-            },
-            "members": [
-                {
-                    "id": user.id,
-                    "username": user.username,
-                    "display_name": user.display_name,
-                    "avatar_url": user.avatar_url,
-                    "is_online": user.is_online,
-                    "role": member.role,
-                    "joined_at": member.joined_at.isoformat() if member.joined_at else None
-                }
-                for member, user in members
-            ],
-            "recent_messages": [
-                {
-                    "id": msg.id,
-                    "from_user_id": msg.from_user_id,
-                    "content": msg.content,
-                    "type": msg.message_type,
-                    "media_url": msg.media_url,
-                    "created_at": msg.created_at.isoformat() if msg.created_at else None
-                }
-                for msg in last_messages
-            ]
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка загрузки группы: {str(e)}")
-
-# ========== СООБЩЕНИЯ ==========
-
-@app.get("/api/chats/all")
-async def get_all_chats(
-    request: Request,
-    db: Session = Depends(get_db)
-):
-    """Получение всех чатов пользователя"""
-    try:
-        user = get_current_user(request, db)
-        if not user:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        # Получаем личные чаты
-        private_chats = []
-        users = db.query(User).filter(User.id != user.id).limit(50).all()
-        
-        for other_user in users:
-            # Проверяем, есть ли сообщения
-            messages_count = db.query(Message).filter(
-                ((Message.from_user_id == user.id) & (Message.to_user_id == other_user.id)) |
-                ((Message.from_user_id == other_user.id) & (Message.to_user_id == user.id))
-            ).count()
+            .container {
+                background: white;
+                border-radius: 10px;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                padding: 40px;
+                max-width: 400px;
+                width: 100%;
+            }
+            h1 {
+                color: #333;
+                text-align: center;
+                margin-bottom: 10px;
+            }
+            .subtitle {
+                color: #666;
+                text-align: center;
+                margin-bottom: 30px;
+            }
+            .form-group {
+                margin-bottom: 20px;
+            }
+            label {
+                display: block;
+                margin-bottom: 5px;
+                color: #555;
+                font-weight: 500;
+            }
+            input {
+                width: 100%;
+                padding: 12px;
+                border: 2px solid #e0e0e0;
+                border-radius: 5px;
+                font-size: 16px;
+                transition: border-color 0.3s;
+                box-sizing: border-box;
+            }
+            input:focus {
+                outline: none;
+                border-color: #667eea;
+            }
+            button {
+                width: 100%;
+                padding: 14px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                border: none;
+                border-radius: 5px;
+                font-size: 16px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: transform 0.2s;
+            }
+            button:hover {
+                transform: translateY(-2px);
+            }
+            .login-link {
+                text-align: center;
+                margin-top: 20px;
+                color: #666;
+            }
+            .login-link a {
+                color: #667eea;
+                text-decoration: none;
+                font-weight: 500;
+            }
+            .error {
+                color: #e74c3c;
+                font-size: 14px;
+                margin-top: 5px;
+            }
+            .success {
+                color: #27ae60;
+                font-size: 14px;
+                margin-top: 5px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Регистрация</h1>
+            <div class="subtitle">Присоединяйтесь к сообществу разработчиков</div>
             
-            if messages_count > 0:
-                # Получаем последнее сообщение
-                last_message = db.query(Message).filter(
-                    ((Message.from_user_id == user.id) & (Message.to_user_id == other_user.id)) |
-                    ((Message.from_user_id == other_user.id) & (Message.to_user_id == user.id))
-                ).order_by(Message.created_at.desc()).first()
+            <form id="registerForm">
+                <div class="form-group">
+                    <label>Имя пользователя</label>
+                    <input type="text" id="username" name="username" required>
+                    <div id="usernameError" class="error"></div>
+                </div>
                 
-                private_chats.append({
-                    "id": other_user.id,
-                    "name": other_user.display_name or other_user.username,
-                    "type": "private",
-                    "avatar_url": other_user.avatar_url,
-                    "username": other_user.username,
-                    "is_online": other_user.is_online,
-                    "last_message": {
-                        "content": last_message.content if last_message else None,
-                        "timestamp": last_message.created_at.isoformat() if last_message else None
-                    } if last_message else None
-                })
-        
-        # Получаем группы пользователя
-        groups = db.query(Group).join(GroupMember).filter(GroupMember.user_id == user.id).all()
-        group_chats = []
-        
-        for group in groups:
-            members_count = db.query(GroupMember).filter(GroupMember.group_id == group.id).count()
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="email" name="email" required>
+                    <div id="emailError" class="error"></div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Пароль</label>
+                    <input type="password" id="password" name="password" required>
+                    <div id="passwordError" class="error">Пароль должен быть от 6 до 72 символов</div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Отображаемое имя (опционально)</label>
+                    <input type="text" id="displayName" name="display_name">
+                </div>
+                
+                <button type="submit">Создать аккаунт</button>
+            </form>
             
-            # Получаем последнее сообщение
-            last_message = db.query(Message).filter(Message.group_id == group.id) \
-                .order_by(Message.created_at.desc()).first()
+            <div class="login-link">
+                Уже есть аккаунт? <a href="/login">Войти</a>
+            </div>
             
-            group_chats.append({
-                "id": group.id,
-                "name": group.name,
-                "description": group.description,
-                "type": "group",
-                "avatar_url": group.avatar_url,
-                "members_count": members_count,
-                "last_message": {
-                    "content": last_message.content if last_message else None,
-                    "timestamp": last_message.created_at.isoformat() if last_message else None
-                } if last_message else None
-            })
+            <div id="message" class="error" style="margin-top: 15px;"></div>
+        </div>
         
-        # Получаем каналы пользователя
-        channels = db.query(Channel).join(Subscription).filter(Subscription.user_id == user.id).all()
-        channel_chats = []
-        
-        for channel in channels:
-            subscribers_count = db.query(Subscription).filter(Subscription.channel_id == channel.id).count()
-            
-            # Получаем последнее сообщение
-            last_message = db.query(Message).filter(Message.channel_id == channel.id) \
-                .order_by(Message.created_at.desc()).first()
-            
-            channel_chats.append({
-                "id": channel.id,
-                "name": channel.name,
-                "description": channel.description,
-                "type": "channel",
-                "avatar_url": channel.avatar_url,
-                "is_official": channel.is_official,
-                "subscribers_count": subscribers_count,
-                "last_message": {
-                    "content": last_message.content if last_message else None,
-                    "timestamp": last_message.created_at.isoformat() if last_message else None
-                } if last_message else None
-            })
-        
-        return {
-            "success": True,
-            "private_chats": private_chats,
-            "group_chats": group_chats,
-            "channel_chats": channel_chats,
-            "counts": {
-                "private": len(private_chats),
-                "groups": len(group_chats),
-                "channels": len(channel_chats),
-                "total": len(private_chats) + len(group_chats) + len(channel_chats)
-            }
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка загрузки чатов: {str(e)}")
-
-@app.get("/api/messages/chat/{chat_type}/{chat_id}")
-async def get_chat_messages(
-    chat_type: str,
-    chat_id: int,
-    page: int = Query(1, ge=1),
-    limit: int = Query(50, ge=1, le=100),
-    request: Request = None,
-    db: Session = Depends(get_db)
-):
-    """Получение сообщений чата"""
-    try:
-        user = get_current_user(request, db)
-        if not user:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        query = db.query(Message)
-        
-        if chat_type == "private":
-            query = query.filter(
-                ((Message.from_user_id == user.id) & (Message.to_user_id == chat_id)) |
-                ((Message.from_user_id == chat_id) & (Message.to_user_id == user.id))
-            )
-        elif chat_type == "group":
-            # Проверяем членство в группе
-            membership = db.query(GroupMember).filter(
-                GroupMember.group_id == chat_id,
-                GroupMember.user_id == user.id
-            ).first()
-            if not membership:
-                raise HTTPException(status_code=403, detail="Доступ запрещен")
-            query = query.filter(Message.group_id == chat_id)
-        elif chat_type == "channel":
-            # Проверяем подписку на канал
-            subscription = db.query(Subscription).filter(
-                Subscription.channel_id == chat_id,
-                Subscription.user_id == user.id
-            ).first()
-            if not subscription:
-                raise HTTPException(status_code=403, detail="Доступ запрещен")
-            query = query.filter(Message.channel_id == chat_id)
-        else:
-            raise HTTPException(status_code=400, detail="Неверный тип чата")
-        
-        total = query.count()
-        messages = query.order_by(Message.created_at.desc()) \
-                       .offset((page - 1) * limit) \
-                       .limit(limit) \
-                       .all()
-        
-        # Получаем информацию о реакциях
-        messages_data = []
-        for msg in messages:
-            reactions = db.query(Reaction).filter(Reaction.message_id == msg.id).all()
-            
-            # Группируем реакции по emoji
-            reactions_grouped = {}
-            for reaction in reactions:
-                if reaction.emoji not in reactions_grouped:
-                    reactions_grouped[reaction.emoji] = {
-                        "count": 0,
-                        "users": []
+        <script>
+            document.getElementById('registerForm').addEventListener('submit', async function(e) {
+                e.preventDefault();
+                
+                // Сброс ошибок
+                document.querySelectorAll('.error').forEach(el => el.textContent = '');
+                document.getElementById('message').textContent = '';
+                
+                const formData = new FormData(this);
+                
+                try {
+                    const response = await fetch('/api/auth/register', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (response.ok) {
+                        document.getElementById('message').textContent = 'Регистрация успешна!';
+                        document.getElementById('message').className = 'success';
+                        
+                        // Перенаправление через 2 секунды
+                        setTimeout(() => {
+                            window.location.href = '/chat';
+                        }, 2000);
+                    } else {
+                        document.getElementById('message').textContent = result.detail || 'Ошибка регистрации';
+                        document.getElementById('message').className = 'error';
                     }
-                reactions_grouped[reaction.emoji]["count"] += 1
-                reactions_grouped[reaction.emoji]["users"].append(reaction.user_id)
-            
-            messages_data.append({
-                "id": msg.id,
-                "from_user_id": msg.from_user_id,
-                "to_user_id": msg.to_user_id,
-                "group_id": msg.group_id,
-                "channel_id": msg.channel_id,
-                "content": msg.content,
-                "type": msg.message_type,
-                "media_url": msg.media_url,
-                "media_size": msg.media_size,
-                "media_duration": msg.media_duration,
-                "thumb_url": msg.thumb_url,
-                "reply_to_id": msg.reply_to_id,
-                "is_edited": msg.is_edited,
-                "is_pinned": msg.is_pinned,
-                "views_count": msg.views_count,
-                "created_at": msg.created_at.isoformat() if msg.created_at else None,
-                "reactions": reactions_grouped,
-                "is_my_message": msg.from_user_id == user.id
-            })
-        
-        return {
-            "success": True,
-            "messages": list(reversed(messages_data)),  # В правильном порядке
-            "pagination": {
-                "page": page,
-                "limit": limit,
-                "total": total,
-                "pages": (total + limit - 1) // limit
-            }
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка загрузки сообщений: {str(e)}")
-
-# ========== ЗАГРУЗКА МЕДИА ==========
-
-@app.post("/api/upload/media")
-async def upload_media(
-    file: UploadFile = File(...),
-    media_type: str = Query("image", regex="^(image|video|audio|file)$"),
-    request: Request = None,
-    db: Session = Depends(get_db)
-):
-    """Загрузка медиа файла"""
-    try:
-        user = get_current_user(request, db)
-        if not user:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        # Определяем тип файла
-        if media_type == "image":
-            allowed_types = ["image/jpeg", "image/png", "image/gif", "image/webp"]
-            max_size = 10 * 1024 * 1024  # 10MB
-        elif media_type == "video":
-            allowed_types = ["video/mp4", "video/webm", "video/ogg"]
-            max_size = 100 * 1024 * 1024  # 100MB
-        elif media_type == "audio":
-            allowed_types = ["audio/mpeg", "audio/wav", "audio/ogg"]
-            max_size = 50 * 1024 * 1024  # 50MB
-        else:  # file
-            allowed_types = ["*/*"]
-            max_size = 50 * 1024 * 1024  # 50MB
-        
-        # Проверяем тип файла
-        if file.content_type and media_type != "file":
-            if file.content_type not in allowed_types:
-                return JSONResponse(
-                    status_code=400,
-                    content={"success": False, "detail": f"Неподдерживаемый тип файла. Разрешены: {', '.join(allowed_types)}"}
-                )
-        
-        # Проверяем размер
-        file.file.seek(0, 2)
-        file_size = file.file.tell()
-        file.file.seek(0)
-        
-        if file_size > max_size:
-            return JSONResponse(
-                status_code=400,
-                content={"success": False, "detail": f"Файл слишком большой. Максимум: {max_size / 1024 / 1024:.1f}MB"}
-            )
-        
-        # Генерируем уникальное имя
-        file_extension = ""
-        if '.' in file.filename:
-            file_extension = file.filename.split('.')[-1]
-        
-        unique_filename = f"{uuid.uuid4()}"
-        if file_extension:
-            unique_filename += f".{file_extension}"
-        
-        # Сохраняем файл
-        save_dir = UPLOAD_DIR / f"{media_type}s"
-        save_dir.mkdir(exist_ok=True)
-        save_path = save_dir / unique_filename
-        
-        with open(save_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        # Сохраняем в базу
-        db_file = FileModel(
-            filename=unique_filename,
-            original_filename=file.filename,
-            file_type=media_type,
-            file_size=file_size,
-            uploaded_by=user.id,
-            url=f"/uploads/{media_type}s/{unique_filename}"
-        )
-        
-        db.add(db_file)
-        db.commit()
-        db.refresh(db_file)
-        
-        return {
-            "success": True,
-            "file": {
-                "id": db_file.id,
-                "url": db_file.url,
-                "filename": db_file.original_filename,
-                "type": db_file.file_type,
-                "size": db_file.file_size,
-                "uploaded_at": db_file.created_at.isoformat() if db_file.created_at else None
-            }
-        }
-        
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "detail": f"Ошибка загрузки файла: {str(e)}"}
-        )
-
-# ========== РЕАКЦИИ ==========
-
-@app.post("/api/messages/{message_id}/reactions")
-async def add_reaction(
-    message_id: int,
-    emoji: str = Form(...),
-    request: Request = None,
-    db: Session = Depends(get_db)
-):
-    """Добавление реакции к сообщению"""
-    try:
-        user = get_current_user(request, db)
-        if not user:
-            raise HTTPException(status_code=401, detail="Требуется аутентификация")
-        
-        # Проверяем существование сообщения
-        message = db.query(Message).filter(Message.id == message_id).first()
-        if not message:
-            raise HTTPException(status_code=404, detail="Сообщение не найдено")
-        
-        # Проверяем доступ к сообщению
-        can_react = False
-        if message.group_id:
-            membership = db.query(GroupMember).filter(
-                GroupMember.group_id == message.group_id,
-                GroupMember.user_id == user.id
-            ).first()
-            can_react = membership is not None
-        elif message.channel_id:
-            subscription = db.query(Subscription).filter(
-                Subscription.channel_id == message.channel_id,
-                Subscription.user_id == user.id
-            ).first()
-            can_react = subscription is not None
-        else:  # приватное сообщение
-            can_react = message.from_user_id == user.id or message.to_user_id == user.id
-        
-        if not can_react:
-            raise HTTPException(status_code=403, detail="Нет доступа к этому сообщению")
-        
-        # Проверяем существующую реакцию
-        existing_reaction = db.query(Reaction).filter(
-            Reaction.message_id == message_id,
-            Reaction.user_id == user.id,
-            Reaction.emoji == emoji
-        ).first()
-        
-        if existing_reaction:
-            # Удаляем реакцию (toggle)
-            db.delete(existing_reaction)
-            action = "removed"
-        else:
-            # Удаляем другие реакции пользователя на это сообщение
-            db.query(Reaction).filter(
-                Reaction.message_id == message_id,
-                Reaction.user_id == user.id
-            ).delete()
-            
-            # Добавляем новую реакцию
-            reaction = Reaction(
-                message_id=message_id,
-                user_id=user.id,
-                emoji=emoji
-            )
-            db.add(reaction)
-            action = "added"
-        
-        db.commit()
-        
-        # Получаем обновленные реакции
-        reactions = db.query(Reaction).filter(Reaction.message_id == message_id).all()
-        reactions_grouped = {}
-        for reaction in reactions:
-            if reaction.emoji not in reactions_grouped:
-                reactions_grouped[reaction.emoji] = {
-                    "count": 0,
-                    "users": []
+                } catch (error) {
+                    document.getElementById('message').textContent = 'Ошибка соединения';
+                    document.getElementById('message').className = 'error';
                 }
-            reactions_grouped[reaction.emoji]["count"] += 1
-            reactions_grouped[reaction.emoji]["users"].append(reaction.user_id)
-        
-        # Отправляем обновление через WebSocket
-        await manager.send_personal_message(
-            json.dumps({
-                "type": "reaction_update",
-                "message_id": message_id,
-                "reactions": reactions_grouped
-            }),
-            user.id
-        )
-        
-        # Отправляем другим участникам чата
-        if message.group_id:
-            members = db.query(GroupMember).filter(GroupMember.group_id == message.group_id).all()
-            for member in members:
-                if member.user_id != user.id:
-                    await manager.send_personal_message(
-                        json.dumps({
-                            "type": "reaction_update",
-                            "message_id": message_id,
-                            "reactions": reactions_grouped
-                        }),
-                        member.user_id
-                    )
-        
-        return {
-            "success": True,
-            "action": action,
-            "reactions": reactions_grouped,
-            "message": f"Реакция {action}"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Ошибка добавления реакции: {str(e)}")
+            });
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
-# ========== WEB SOCKET ==========
-
-@app.websocket("/ws/{user_id}")
-async def websocket_endpoint(websocket: WebSocket, user_id: int):
-    """WebSocket endpoint для реального времени"""
-    await manager.connect(websocket, user_id)
+@app.get("/login")
+async def serve_login():
+    """Страница входа"""
+    login_path = frontend_dir / "login.html"
+    if login_path.exists():
+        return FileResponse(str(login_path))
     
-    # Обновляем статус пользователя
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.id == user_id).first()
-        if user:
-            user.is_online = True
-            db.commit()
-    except:
-        pass
-    finally:
-        db.close()
-    
-    try:
-        while True:
-            data = await websocket.receive_text()
-            message_data = json.loads(data)
-            message_type = message_data.get("type", "message")
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>DevNet - Вход</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+            }
+            .container {
+                background: white;
+                border-radius: 10px;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                padding: 40px;
+                max-width: 400px;
+                width: 100%;
+            }
+            h1 {
+                color: #333;
+                text-align: center;
+                margin-bottom: 10px;
+            }
+            .subtitle {
+                color: #666;
+                text-align: center;
+                margin-bottom: 30px;
+            }
+            .form-group {
+                margin-bottom: 20px;
+            }
+            label {
+                display: block;
+                margin-bottom: 5px;
+                color: #555;
+                font-weight: 500;
+            }
+            input {
+                width: 100%;
+                padding: 12px;
+                border: 2px solid #e0e0e0;
+                border-radius: 5px;
+                font-size: 16px;
+                transition: border-color 0.3s;
+                box-sizing: border-box;
+            }
+            input:focus {
+                outline: none;
+                border-color: #667eea;
+            }
+            button {
+                width: 100%;
+                padding: 14px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                border: none;
+                border-radius: 5px;
+                font-size: 16px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: transform 0.2s;
+            }
+            button:hover {
+                transform: translateY(-2px);
+            }
+            .register-link {
+                text-align: center;
+                margin-top: 20px;
+                color: #666;
+            }
+            .register-link a {
+                color: #667eea;
+                text-decoration: none;
+                font-weight: 500;
+            }
+            .error {
+                color: #e74c3c;
+                font-size: 14px;
+                margin-top: 5px;
+            }
+            .success {
+                color: #27ae60;
+                font-size: 14px;
+                margin-top: 5px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Вход</h1>
+            <div class="subtitle">Войдите в свой аккаунт DevNet</div>
             
-            print(f"📨 WebSocket сообщение от {user_id}: {message_type}")
-            
-            if message_type == "message":
-                await handle_text_message(message_data, user_id)
-            elif message_type == "media_message":
-                await handle_media_message(message_data, user_id)
-            elif message_type == "typing":
-                await handle_typing_indicator(message_data, user_id)
-            elif message_type == "read_receipt":
-                await handle_read_receipt(message_data, user_id)
-            elif message_type == "call":
-                await handle_call_message(message_data, user_id)
+            <form id="loginForm">
+                <div class="form-group">
+                    <label>Имя пользователя</label>
+                    <input type="text" id="username" name="username" required>
+                </div>
                 
-    except WebSocketDisconnect:
-        print(f"📴 Пользователь отключился: {user_id}")
+                <div class="form-group">
+                    <label>Пароль</label>
+                    <input type="password" id="password" name="password" required>
+                </div>
+                
+                <button type="submit">Войти</button>
+            </form>
+            
+            <div class="register-link">
+                Нет аккаунта? <a href="/register">Зарегистрироваться</a>
+            </div>
+            
+            <div id="message" class="error" style="margin-top: 15px;"></div>
+        </div>
         
-        # Обновляем статус
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.id == user_id).first()
-            if user:
-                user.is_online = False
-                db.commit()
-        except:
-            pass
-        finally:
-            db.close()
-        
-        manager.disconnect(user_id)
-
-async def handle_text_message(message_data: dict, sender_id: int):
-    """Обработка текстовых сообщений"""
-    db = SessionLocal()
-    try:
-        chat_type = message_data.get("chat_type", "private")
-        chat_id = message_data.get("chat_id")
-        content = message_data.get("content", "").strip()
-        reply_to_id = message_data.get("reply_to_id")
-        
-        if not content:
-            return
-        
-        # Проверяем доступ к чату
-        if chat_type == "group":
-            membership = db.query(GroupMember).filter(
-                GroupMember.group_id == chat_id,
-                GroupMember.user_id == sender_id
-            ).first()
-            if not membership:
-                return
-        elif chat_type == "channel":
-            subscription = db.query(Subscription).filter(
-                Subscription.channel_id == chat_id,
-                Subscription.user_id == sender_id
-            ).first()
-            if not subscription:
-                return
-            sender_id = None
-        
-        # Сохраняем в базу
-        db_message = Message(
-            from_user_id=sender_id if chat_type != "channel" else None,
-            to_user_id=chat_id if chat_type == "private" else None,
-            group_id=chat_id if chat_type == "group" else None,
-            channel_id=chat_id if chat_type == "channel" else None,
-            content=content,
-            message_type=MessageType.TEXT.value,
-            reply_to_id=reply_to_id
-        )
-        
-        db.add(db_message)
-        db.commit()
-        db.refresh(db_message)
-        
-        # Обновляем активность чата
-        if chat_type == "group":
-            group = db.query(Group).filter(Group.id == chat_id).first()
-            if group:
-                group.last_activity = datetime.utcnow()
-                db.commit()
-        elif chat_type == "channel":
-            channel = db.query(Channel).filter(Channel.id == chat_id).first()
-            if channel:
-                channel.last_activity = datetime.utcnow()
-                db.commit()
-        
-        # Отправляем получателям
-        response_data = {
-            "type": "message",
-            "chat_type": chat_type,
-            "id": db_message.id,
-            "content": content,
-            "reply_to_id": reply_to_id,
-            "timestamp": db_message.created_at.isoformat()
-        }
-        
-        if chat_type == "private":
-            response_data["from_user_id"] = sender_id
-            response_data["to_user_id"] = chat_id
-            await manager.send_personal_message(
-                json.dumps(response_data),
-                chat_id
-            )
-        elif chat_type == "group":
-            response_data["group_id"] = chat_id
-            response_data["from_user_id"] = sender_id
-            members = db.query(GroupMember).filter(GroupMember.group_id == chat_id).all()
-            for member in members:
-                if member.user_id != sender_id:
-                    await manager.send_personal_message(
-                        json.dumps(response_data),
-                        member.user_id
-                    )
-        elif chat_type == "channel":
-            response_data["channel_id"] = chat_id
-            subscribers = db.query(Subscription).filter(Subscription.channel_id == chat_id).all()
-            for subscriber in subscribers:
-                await manager.send_personal_message(
-                    json.dumps(response_data),
-                    subscriber.user_id
-                )
-        
-        # Подтверждение отправителю
-        if sender_id:
-            await manager.send_personal_message(
-                json.dumps({
-                    "type": "message_sent",
-                    "id": db_message.id,
-                    "timestamp": db_message.created_at.isoformat()
-                }),
-                sender_id
-            )
-        
-    except Exception as e:
-        db.rollback()
-        print(f"❌ Ошибка обработки текстового сообщения: {e}")
-    finally:
-        db.close()
-
-async def handle_media_message(message_data: dict, sender_id: int):
-    """Обработка медиа сообщений"""
-    await handle_text_message(message_data, sender_id)
-
-async def handle_typing_indicator(message_data: dict, sender_id: int):
-    """Обработка индикатора набора текста"""
-    chat_type = message_data.get("chat_type", "private")
-    chat_id = message_data.get("chat_id")
-    is_typing = message_data.get("is_typing", False)
-    
-    if chat_type == "private":
-        await manager.send_personal_message(
-            json.dumps({
-                "type": "typing",
-                "chat_type": "private",
-                "from_user_id": sender_id,
-                "is_typing": is_typing
-            }),
-            chat_id
-        )
-    elif chat_type == "group":
-        db = SessionLocal()
-        try:
-            members = db.query(GroupMember).filter(GroupMember.group_id == chat_id).all()
-            for member in members:
-                if member.user_id != sender_id:
-                    await manager.send_personal_message(
-                        json.dumps({
-                            "type": "typing",
-                            "chat_type": "group",
-                            "group_id": chat_id,
-                            "from_user_id": sender_id,
-                            "is_typing": is_typing
-                        }),
-                        member.user_id
-                    )
-        finally:
-            db.close()
-    elif chat_type == "channel":
-        pass
-
-async def handle_read_receipt(message_data: dict, user_id: int):
-    """Обработка подтверждения прочтения"""
-    message_id = message_data.get("message_id")
-    
-    db = SessionLocal()
-    try:
-        message = db.query(Message).filter(Message.id == message_id).first()
-        if message:
-            message.views_count += 1
-            db.commit()
-    finally:
-        db.close()
-
-async def handle_call_message(message_data: dict, user_id: int):
-    """Обработка сообщений о звонках"""
-    call_type = message_data.get("call_type", "offer")
-    target_id = message_data.get("target_id")
-    
-    await manager.send_personal_message(
-        json.dumps({
-            "type": "call",
-            "call_type": call_type,
-            "from_user_id": user_id,
-            "data": message_data.get("data")
-        }),
-        target_id
-    )
-
-# ========== СТАТИЧЕСКИЕ ФАЙЛЫ ==========
-
-@app.get("/index.html")
-async def serve_index():
-    """Главная страница"""
-    index_path = frontend_dir / "index.html"
-    if index_path.exists():
-        return FileResponse(str(index_path))
-    return HTMLResponse("Главная страница не найдена")
+        <script>
+            document.getElementById('loginForm').addEventListener('submit', async function(e) {
+                e.preventDefault();
+                document.getElementById('message').textContent = '';
+                
+                const formData = new FormData(this);
+                
+                try {
+                    const response = await fetch('/api/auth/login', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (response.ok) {
+                        document.getElementById('message').textContent = 'Вход выполнен успешно!';
+                        document.getElementById('message').className = 'success';
+                        
+                        // Перенаправление через 1 секунду
+                        setTimeout(() => {
+                            window.location.href = '/chat';
+                        }, 1000);
+                    } else {
+                        document.getElementById('message').textContent = result.detail || 'Ошибка входа';
+                        document.getElementById('message').className = 'error';
+                    }
+                } catch (error) {
+                    document.getElementById('message').textContent = 'Ошибка соединения';
+                    document.getElementById('message').className = 'error';
+                }
+            });
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 @app.get("/chat")
 async def serve_chat():
@@ -1633,7 +1067,711 @@ async def serve_chat():
     chat_path = frontend_dir / "chat.html"
     if chat_path.exists():
         return FileResponse(str(chat_path))
-    return HTMLResponse("Страница чата не найдена")
+    
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>DevNet - Чат</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                padding: 20px;
+            }
+            .app {
+                display: flex;
+                max-width: 1400px;
+                margin: 0 auto;
+                background: white;
+                border-radius: 10px;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                overflow: hidden;
+                height: calc(100vh - 40px);
+            }
+            /* Sidebar */
+            .sidebar {
+                width: 300px;
+                background: #f8f9fa;
+                border-right: 1px solid #e9ecef;
+                display: flex;
+                flex-direction: column;
+            }
+            .user-info {
+                padding: 20px;
+                background: white;
+                border-bottom: 1px solid #e9ecef;
+            }
+            .user-avatar {
+                width: 60px;
+                height: 60px;
+                border-radius: 50%;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 24px;
+                font-weight: bold;
+                margin-bottom: 10px;
+            }
+            .user-name {
+                font-weight: 600;
+                color: #333;
+                margin-bottom: 5px;
+            }
+            .user-status {
+                font-size: 14px;
+                color: #28a745;
+                display: flex;
+                align-items: center;
+            }
+            .status-dot {
+                width: 8px;
+                height: 8px;
+                background: #28a745;
+                border-radius: 50%;
+                margin-right: 5px;
+            }
+            /* Tabs */
+            .tabs {
+                display: flex;
+                background: white;
+                border-bottom: 1px solid #e9ecef;
+            }
+            .tab {
+                flex: 1;
+                padding: 15px;
+                text-align: center;
+                cursor: pointer;
+                border-bottom: 3px solid transparent;
+                transition: all 0.3s;
+                font-weight: 500;
+                color: #666;
+            }
+            .tab:hover {
+                background: #f8f9fa;
+            }
+            .tab.active {
+                color: #667eea;
+                border-bottom-color: #667eea;
+            }
+            /* Chat List */
+            .chat-list {
+                flex: 1;
+                overflow-y: auto;
+            }
+            .chat-item {
+                padding: 15px 20px;
+                border-bottom: 1px solid #e9ecef;
+                cursor: pointer;
+                transition: background 0.2s;
+            }
+            .chat-item:hover {
+                background: #f8f9fa;
+            }
+            .chat-item.active {
+                background: #e3f2fd;
+            }
+            .chat-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 5px;
+            }
+            .chat-name {
+                font-weight: 600;
+                color: #333;
+            }
+            .chat-time {
+                font-size: 12px;
+                color: #999;
+            }
+            .chat-preview {
+                font-size: 14px;
+                color: #666;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            /* Main Chat */
+            .main-chat {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                background: white;
+            }
+            .chat-header-bar {
+                padding: 20px;
+                border-bottom: 1px solid #e9ecef;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            .current-chat-info {
+                display: flex;
+                align-items: center;
+            }
+            .chat-avatar {
+                width: 40px;
+                height: 40px;
+                border-radius: 50%;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-weight: bold;
+                margin-right: 10px;
+            }
+            .chat-title {
+                font-weight: 600;
+                color: #333;
+                font-size: 18px;
+            }
+            .chat-subtitle {
+                font-size: 14px;
+                color: #666;
+            }
+            /* Messages */
+            .messages-container {
+                flex: 1;
+                padding: 20px;
+                overflow-y: auto;
+                background: #f5f7fb;
+            }
+            .message {
+                margin-bottom: 15px;
+                max-width: 70%;
+            }
+            .message.sent {
+                margin-left: auto;
+            }
+            .message-content {
+                padding: 10px 15px;
+                border-radius: 18px;
+                background: white;
+                box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+            }
+            .message.sent .message-content {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+            }
+            .message-time {
+                font-size: 12px;
+                color: #999;
+                margin-top: 5px;
+                text-align: right;
+            }
+            /* Message Input */
+            .message-input-container {
+                padding: 20px;
+                border-top: 1px solid #e9ecef;
+                display: flex;
+                gap: 10px;
+            }
+            .message-input {
+                flex: 1;
+                padding: 12px 15px;
+                border: 2px solid #e0e0e0;
+                border-radius: 25px;
+                font-size: 16px;
+                outline: none;
+                transition: border-color 0.3s;
+            }
+            .message-input:focus {
+                border-color: #667eea;
+            }
+            .send-button {
+                width: 50px;
+                height: 50px;
+                border-radius: 50%;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                border: none;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                cursor: pointer;
+                transition: transform 0.2s;
+            }
+            .send-button:hover {
+                transform: scale(1.05);
+            }
+            /* Empty State */
+            .empty-state {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100%;
+                color: #666;
+                text-align: center;
+                padding: 40px;
+            }
+            .empty-icon {
+                font-size: 48px;
+                margin-bottom: 20px;
+            }
+            .empty-title {
+                font-size: 24px;
+                font-weight: 600;
+                margin-bottom: 10px;
+                color: #333;
+            }
+            .empty-description {
+                font-size: 16px;
+                margin-bottom: 30px;
+                max-width: 400px;
+            }
+            /* Auth State */
+            .auth-state {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100%;
+                padding: 40px;
+                text-align: center;
+            }
+            .auth-state h2 {
+                margin-bottom: 20px;
+                color: #333;
+            }
+            .auth-buttons {
+                display: flex;
+                gap: 15px;
+                margin-top: 20px;
+            }
+            .auth-button {
+                padding: 12px 30px;
+                border-radius: 25px;
+                font-size: 16px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: transform 0.2s;
+                text-decoration: none;
+            }
+            .auth-button.primary {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                border: none;
+            }
+            .auth-button.secondary {
+                background: white;
+                color: #667eea;
+                border: 2px solid #667eea;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="app">
+            <div class="sidebar">
+                <div class="user-info">
+                    <div class="user-avatar" id="userAvatar">U</div>
+                    <div class="user-name" id="userName">Гость</div>
+                    <div class="user-status" id="userStatus">
+                        <span class="status-dot"></span>
+                        <span>Не в сети</span>
+                    </div>
+                </div>
+                
+                <div class="tabs">
+                    <div class="tab active" onclick="showTab('private')">Чаты</div>
+                    <div class="tab" onclick="showTab('groups')">Группы</div>
+                    <div class="tab" onclick="showTab('channels')">Каналы</div>
+                </div>
+                
+                <div class="chat-list" id="chatList">
+                    <!-- Список чатов будет загружен здесь -->
+                </div>
+            </div>
+            
+            <div class="main-chat">
+                <div class="chat-header-bar">
+                    <div class="current-chat-info">
+                        <div class="chat-avatar" id="currentChatAvatar">C</div>
+                        <div>
+                            <div class="chat-title" id="currentChatTitle">Выберите чат</div>
+                            <div class="chat-subtitle" id="currentChatSubtitle">Начните общение</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="messages-container" id="messagesContainer">
+                    <div class="empty-state" id="emptyState">
+                        <div class="empty-icon">💬</div>
+                        <div class="empty-title">Выберите чат</div>
+                        <div class="empty-description">
+                            Выберите чат из списка слева чтобы начать общение
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="message-input-container">
+                    <input type="text" class="message-input" id="messageInput" placeholder="Введите сообщение..." disabled>
+                    <button class="send-button" id="sendButton" disabled>→</button>
+                </div>
+            </div>
+        </div>
+        
+        <script>
+            let currentUser = null;
+            let currentChat = null;
+            let ws = null;
+            let currentTab = 'private';
+            
+            // Загрузка информации о пользователе
+            async function loadUserInfo() {
+                try {
+                    const response = await fetch('/api/auth/me');
+                    if (response.ok) {
+                        const data = await response.json();
+                        currentUser = data.user;
+                        
+                        // Обновление интерфейса
+                        document.getElementById('userAvatar').textContent = 
+                            currentUser.display_name?.charAt(0) || currentUser.username.charAt(0);
+                        document.getElementById('userName').textContent = currentUser.display_name || currentUser.username;
+                        document.getElementById('userStatus').innerHTML = '<span class="status-dot"></span><span>В сети</span>';
+                        
+                        // Подключение WebSocket
+                        connectWebSocket();
+                        
+                        // Загрузка чатов
+                        loadChats();
+                        
+                        return true;
+                    } else {
+                        showAuthState();
+                        return false;
+                    }
+                } catch (error) {
+                    showAuthState();
+                    return false;
+                }
+            }
+            
+            // Показать состояние авторизации
+            function showAuthState() {
+                const chatList = document.getElementById('chatList');
+                chatList.innerHTML = `
+                    <div class="auth-state">
+                        <h2>Требуется авторизация</h2>
+                        <p>Войдите или зарегистрируйтесь чтобы использовать чат</p>
+                        <div class="auth-buttons">
+                            <a href="/login" class="auth-button primary">Войти</a>
+                            <a href="/register" class="auth-button secondary">Регистрация</a>
+                        </div>
+                    </div>
+                `;
+                
+                document.getElementById('emptyState').innerHTML = `
+                    <div class="auth-state">
+                        <h2>Добро пожаловать в DevNet!</h2>
+                        <p>Общайтесь с коллегами в реальном времени</p>
+                        <div class="features" style="margin-top: 30px; text-align: left;">
+                            <div style="margin-bottom: 10px;">⚡ <b>Real-time чат</b> - Мгновенная отправка сообщений через WebSocket</div>
+                            <div style="margin-bottom: 10px;">👥 <b>Группы</b> - Создавайте группы для общения с командой</div>
+                            <div style="margin-bottom: 10px;">🖼️ <b>Файлы</b> - Отправляйте изображения и документы</div>
+                        </div>
+                        <div class="auth-buttons">
+                            <a href="/login" class="auth-button primary">Войти</a>
+                            <a href="/register" class="auth-button secondary">Зарегистрироваться</a>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Подключение WebSocket
+            function connectWebSocket() {
+                if (!currentUser || ws) return;
+                
+                ws = new WebSocket(`ws://${window.location.host}/ws/${currentUser.id}`);
+                
+                ws.onopen = function() {
+                    console.log('WebSocket connected');
+                    updateOnlineStatus(true);
+                };
+                
+                ws.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    handleWebSocketMessage(data);
+                };
+                
+                ws.onclose = function() {
+                    console.log('WebSocket disconnected');
+                    updateOnlineStatus(false);
+                    // Попытка переподключения через 5 секунд
+                    setTimeout(() => {
+                        if (currentUser) connectWebSocket();
+                    }, 5000);
+                };
+            }
+            
+            // Обновление статуса онлайн
+            function updateOnlineStatus(isOnline) {
+                const statusElement = document.getElementById('userStatus');
+                if (isOnline) {
+                    statusElement.innerHTML = '<span class="status-dot"></span><span>В сети</span>';
+                } else {
+                    statusElement.innerHTML = '<span class="status-dot" style="background: #dc3545;"></span><span>Не в сети</span>';
+                }
+            }
+            
+            // Загрузка чатов
+            async function loadChats() {
+                try {
+                    const response = await fetch('/api/chats/all');
+                    if (response.ok) {
+                        const data = await response.json();
+                        displayChats(data);
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки чатов:', error);
+                }
+            }
+            
+            // Отображение чатов
+            function displayChats(data) {
+                const chatList = document.getElementById('chatList');
+                let html = '';
+                
+                if (currentTab === 'private') {
+                    if (data.private_chats && data.private_chats.length > 0) {
+                        data.private_chats.forEach(chat => {
+                            html += createChatItem(chat, 'private');
+                        });
+                    } else {
+                        html = '<div style="padding: 20px; color: #666; text-align: center;">Нет личных чатов</div>';
+                    }
+                } else if (currentTab === 'groups') {
+                    if (data.group_chats && data.group_chats.length > 0) {
+                        data.group_chats.forEach(chat => {
+                            html += createChatItem(chat, 'group');
+                        });
+                    } else {
+                        html = '<div style="padding: 20px; color: #666; text-align: center;">Нет групп</div>';
+                    }
+                } else if (currentTab === 'channels') {
+                    if (data.channel_chats && data.channel_chats.length > 0) {
+                        data.channel_chats.forEach(chat => {
+                            html += createChatItem(chat, 'channel');
+                        });
+                    } else {
+                        html = '<div style="padding: 20px; color: #666; text-align: center;">Нет каналов</div>';
+                    }
+                }
+                
+                chatList.innerHTML = html;
+            }
+            
+            // Создание элемента чата
+            function createChatItem(chat, type) {
+                const lastMsg = chat.last_message ? `
+                    <div class="chat-time">${formatTime(chat.last_message.timestamp)}</div>
+                    <div class="chat-preview">${chat.last_message.content || ''}</div>
+                ` : '';
+                
+                return `
+                    <div class="chat-item" onclick="selectChat(${chat.id}, '${type}')">
+                        <div class="chat-header">
+                            <div class="chat-name">${chat.name}</div>
+                            ${chat.last_message ? `<div class="chat-time">${formatTime(chat.last_message.timestamp)}</div>` : ''}
+                        </div>
+                        ${lastMsg}
+                    </div>
+                `;
+            }
+            
+            // Выбор чата
+            async function selectChat(chatId, type) {
+                currentChat = { id: chatId, type: type };
+                
+                // Обновление интерфейса
+                document.querySelectorAll('.chat-item').forEach(item => item.classList.remove('active'));
+                event.currentTarget.classList.add('active');
+                
+                // Загрузка информации о чате
+                await loadChatInfo(chatId, type);
+                
+                // Загрузка сообщений
+                await loadMessages(chatId, type);
+                
+                // Активация поля ввода
+                document.getElementById('messageInput').disabled = false;
+                document.getElementById('sendButton').disabled = false;
+                document.getElementById('messageInput').focus();
+            }
+            
+            // Загрузка информации о чате
+            async function loadChatInfo(chatId, type) {
+                let title = '';
+                let subtitle = '';
+                
+                if (type === 'private') {
+                    // Для приватного чата загружаем информацию о пользователе
+                    try {
+                        const response = await fetch('/api/users');
+                        if (response.ok) {
+                            const data = await response.json();
+                            const user = data.users.find(u => u.id === chatId);
+                            if (user) {
+                                title = user.display_name || user.username;
+                                subtitle = user.is_online ? 'В сети' : 'Не в сети';
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Ошибка загрузки информации о пользователе:', error);
+                    }
+                } else if (type === 'group') {
+                    title = `Группа #${chatId}`;
+                    subtitle = 'Групповой чат';
+                } else if (type === 'channel') {
+                    title = `Канал #${chatId}`;
+                    subtitle = 'Канал';
+                }
+                
+                document.getElementById('currentChatTitle').textContent = title;
+                document.getElementById('currentChatSubtitle').textContent = subtitle;
+                document.getElementById('currentChatAvatar').textContent = title.charAt(0);
+                
+                // Скрываем пустое состояние
+                document.getElementById('emptyState').style.display = 'none';
+            }
+            
+            // Загрузка сообщений
+            async function loadMessages(chatId, type) {
+                try {
+                    const response = await fetch(`/api/messages/chat/${type}/${chatId}`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        displayMessages(data.messages);
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки сообщений:', error);
+                }
+            }
+            
+            // Отображение сообщений
+            function displayMessages(messages) {
+                const container = document.getElementById('messagesContainer');
+                let html = '';
+                
+                messages.forEach(msg => {
+                    const isSent = msg.from_user_id === currentUser?.id;
+                    const time = msg.created_at ? formatTime(msg.created_at) : '';
+                    
+                    html += `
+                        <div class="message ${isSent ? 'sent' : 'received'}">
+                            <div class="message-content">${msg.content || ''}</div>
+                            <div class="message-time">${time}</div>
+                        </div>
+                    `;
+                });
+                
+                container.innerHTML = html;
+                container.scrollTop = container.scrollHeight;
+            }
+            
+            // Отправка сообщения
+            async function sendMessage() {
+                const input = document.getElementById('messageInput');
+                const content = input.value.trim();
+                
+                if (!content || !currentChat || !ws || ws.readyState !== WebSocket.OPEN) return;
+                
+                const message = {
+                    type: 'message',
+                    chat_type: currentChat.type,
+                    chat_id: currentChat.id,
+                    content: content
+                };
+                
+                ws.send(JSON.stringify(message));
+                
+                // Добавление сообщения в интерфейс
+                const container = document.getElementById('messagesContainer');
+                const time = new Date().toISOString();
+                
+                container.innerHTML += `
+                    <div class="message sent">
+                        <div class="message-content">${content}</div>
+                        <div class="message-time">${formatTime(time)}</div>
+                    </div>
+                `;
+                
+                input.value = '';
+                container.scrollTop = container.scrollHeight;
+            }
+            
+            // Обработка сообщений WebSocket
+            function handleWebSocketMessage(data) {
+                if (data.type === 'message' && currentChat && 
+                    ((currentChat.type === 'private' && data.to_user_id === currentUser?.id) ||
+                     (currentChat.type === 'group' && data.group_id === currentChat.id) ||
+                     (currentChat.type === 'channel' && data.channel_id === currentChat.id))) {
+                    
+                    const container = document.getElementById('messagesContainer');
+                    const time = data.timestamp || new Date().toISOString();
+                    
+                    container.innerHTML += `
+                        <div class="message received">
+                            <div class="message-content">${data.content || ''}</div>
+                            <div class="message-time">${formatTime(time)}</div>
+                        </div>
+                    `;
+                    
+                    container.scrollTop = container.scrollHeight;
+                }
+            }
+            
+            // Форматирование времени
+            function formatTime(isoString) {
+                const date = new Date(isoString);
+                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            }
+            
+            // Показать вкладку
+            function showTab(tab) {
+                currentTab = tab;
+                
+                // Обновление активной вкладки
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                event.currentTarget.classList.add('active');
+                
+                // Перезагрузка чатов
+                if (currentUser) {
+                    loadChats();
+                }
+            }
+            
+            // Инициализация
+            document.addEventListener('DOMContentLoaded', async () => {
+                // Загрузка пользователя
+                const isAuthenticated = await loadUserInfo();
+                
+                if (isAuthenticated) {
+                    // Настройка отправки сообщения
+                    document.getElementById('sendButton').onclick = sendMessage;
+                    document.getElementById('messageInput').onkeypress = function(e) {
+                        if (e.key === 'Enter') sendMessage();
+                    };
+                }
+            });
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 # ========== ЗАПУСК СЕРВЕРА ==========
 
@@ -1643,6 +1781,10 @@ if __name__ == "__main__":
     print(f"📁 Директория загрузок: {UPLOAD_DIR}")
     print(f"📁 Директория фронтенда: {frontend_dir}")
     print(f"📱 Документация API: http://localhost:{port}/api/docs")
+    print(f"🐛 Диагностика: http://localhost:{port}/api/debug")
+    print(f"📝 Регистрация: http://localhost:{port}/register")
+    print(f"🔐 Вход: http://localhost:{port}/login")
+    print(f"💬 Чат: http://localhost:{port}/chat")
     print("👑 Администратор: admin / admin123")
     
     uvicorn.run(
