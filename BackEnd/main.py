@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, or_, and_
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,7 +12,7 @@ import os
 import sys
 import shutil
 import uuid
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import hashlib
 import secrets
 
@@ -44,27 +44,65 @@ except ImportError as e:
     print(f"❌ Error importing models: {e}")
     raise
 
-# ========== ПРОСТОЙ WEBSOCKET MANAGER ==========
+# ========== WEBSOCKET MANAGER ==========
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections = {}
+        self.active_connections: Dict[int, WebSocket] = {}
+        self.user_statuses: Dict[int, bool] = {}
     
     async def connect(self, websocket: WebSocket, user_id: int):
         await websocket.accept()
         self.active_connections[user_id] = websocket
+        self.user_statuses[user_id] = True
+        print(f"✅ User {user_id} connected")
+        
+        # Уведомляем о новом статусе онлайн
+        await self.broadcast_status(user_id, True)
     
     def disconnect(self, user_id: int):
         if user_id in self.active_connections:
             del self.active_connections[user_id]
+        self.user_statuses[user_id] = False
+        print(f"📴 User {user_id} disconnected")
     
-    async def send_personal_message(self, message: str, user_id: int):
+    async def send_personal_message(self, message: Dict[str, Any], user_id: int):
         if user_id in self.active_connections:
-            await self.active_connections[user_id].send_text(message)
+            await self.active_connections[user_id].send_json(message)
+    
+    async def send_to_user(self, user_id: int, message: Dict[str, Any]):
+        if user_id in self.active_connections:
+            await self.active_connections[user_id].send_json(message)
+    
+    async def broadcast(self, message: Dict[str, Any], exclude_user_id: Optional[int] = None):
+        disconnected = []
+        for user_id, connection in self.active_connections.items():
+            if user_id != exclude_user_id:
+                try:
+                    await connection.send_json(message)
+                except:
+                    disconnected.append(user_id)
+        
+        for user_id in disconnected:
+            self.disconnect(user_id)
+    
+    async def broadcast_to_group(self, group_id: int, message: Dict[str, Any], exclude_user_id: Optional[int] = None):
+        # Здесь должна быть логика отправки участникам группы
+        # Пока отправляем всем
+        await self.broadcast(message, exclude_user_id)
+    
+    async def broadcast_status(self, user_id: int, is_online: bool):
+        status_message = {
+            "type": "user_status",
+            "user_id": user_id,
+            "is_online": is_online,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        await self.broadcast(status_message, user_id)
 
 manager = ConnectionManager()
 
-# ========== ПРОСТОЙ AUTH MODULE ==========
+# ========== AUTH MODULE ==========
 
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -95,7 +133,34 @@ def verify_token(token: str):
     except JWTError:
         return None
 
-# ========== СОЗДАНИЕ АДМИНИСТРАТОРА (если нет) ==========
+def get_current_user(request: Request, db: Session = Depends(get_db)):
+    """Получаем текущего пользователя из токена"""
+    token = request.cookies.get("access_token")
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Требуется аутентификация"
+        )
+    
+    payload = verify_token(token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Недействительный токен"
+        )
+    
+    user_id = payload.get("user_id")
+    user = db.query(User).filter(User.id == user_id).first()
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден"
+        )
+    
+    return user
+
+# ========== СОЗДАНИЕ АДМИНИСТРАТОРА ==========
 
 def create_admin_user():
     """Создает администратора если его нет в базе"""
@@ -105,7 +170,6 @@ def create_admin_user():
         if not admin:
             print("👑 Создаем администратора...")
             admin_password = "admin123"
-            # Обрезаем пароль если он слишком длинный для bcrypt
             if len(admin_password) > 72:
                 admin_password = admin_password[:72]
             
@@ -125,7 +189,6 @@ def create_admin_user():
     finally:
         db.close()
 
-# Вызываем создание администратора
 create_admin_user()
 
 # ========== СОЗДАНИЕ FASTAPI ПРИЛОЖЕНИЯ ==========
@@ -136,7 +199,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Настройка CORS - разрешаем все для фронтенда
+# Настройка CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -145,10 +208,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Создаем директории для загрузок
+# Создаем директории
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
-for media_type in ["images", "avatars"]:
+for media_type in ["images", "avatars", "files"]:
     (UPLOAD_DIR / media_type).mkdir(exist_ok=True)
 
 print(f"📁 Upload directory: {UPLOAD_DIR}")
@@ -161,16 +224,14 @@ frontend_dir = project_root / "frontend"
 print(f"📁 Project root: {project_root}")
 print(f"📁 Frontend directory: {frontend_dir}")
 
-# ========== HEALTH CHECK (ВАЖНО ДЛЯ RAILWAY) ==========
+# ========== HEALTH CHECK ==========
 
 @app.get("/health")
 async def health_check():
-    """Проверка здоровья API (для Railway)"""
     return JSONResponse(content={"status": "ok"}, status_code=200)
 
 @app.get("/api/health")
 async def api_health_check():
-    """Проверка здоровья API с подробностями"""
     return {
         "status": "healthy",
         "service": "DevNet Messenger",
@@ -180,212 +241,7 @@ async def api_health_check():
         "railway": os.environ.get("RAILWAY_ENVIRONMENT") is not None
     }
 
-@app.get("/api/debug")
-async def debug_info():
-    """Отладочная информация"""
-    return {
-        "database_url": "sqlite:///:memory:" if os.environ.get("RAILWAY_ENVIRONMENT") else "sqlite:///./devnet.db",
-        "railway_env": os.environ.get("RAILWAY_ENVIRONMENT"),
-        "port": os.environ.get("PORT", 8080),
-        "upload_dir": str(UPLOAD_DIR),
-        "frontend_dir": str(frontend_dir),
-        "current_time": datetime.utcnow().isoformat(),
-        "frontend_exists": frontend_dir.exists()
-    }
-
-# ========== ТЕСТОВЫЕ ЭНДПОИНТЫ ДЛЯ ОТЛАДКИ ==========
-
-@app.get("/test")
-async def test_page():
-    """Тестовая страница для проверки работы"""
-    return HTMLResponse("""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Test Page - DevNet Messenger</title>
-        <style>
-            body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
-            .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-            h1 { color: #333; }
-            .test-section { margin: 20px 0; padding: 20px; border: 1px solid #ddd; border-radius: 8px; }
-            button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 5px; }
-            button:hover { background: #0056b3; }
-            .result { margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px; font-family: monospace; }
-            .success { color: green; }
-            .error { color: red; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>DevNet Messenger Test Page</h1>
-            
-            <div class="test-section">
-                <h2>1. Test API Endpoints</h2>
-                <button onclick="testHealth()">Test /api/health</button>
-                <button onclick="testDebug()">Test /api/debug</button>
-                <button onclick="testUsers()">Test /api/users</button>
-                <div id="apiResult" class="result"></div>
-            </div>
-            
-            <div class="test-section">
-                <h2>2. Test Authentication</h2>
-                <button onclick="testRegister()">Test Register (POST /api/register)</button>
-                <button onclick="testLogin()">Test Login (POST /api/login)</button>
-                <button onclick="testMe()">Test Get User Info (GET /api/me)</button>
-                <div id="authResult" class="result"></div>
-            </div>
-            
-            <div class="test-section">
-                <h2>3. Test Static Files</h2>
-                <button onclick="testIndex()">Load index.html</button>
-                <button onclick="testChat()">Load chat.html</button>
-                <div id="staticResult" class="result"></div>
-            </div>
-            
-            <div class="test-section">
-                <h2>4. Direct Form Test</h2>
-                <form id="testForm" onsubmit="return testFormSubmit(event)">
-                    <input type="text" name="username" placeholder="Username" value="testuser" required>
-                    <input type="email" name="email" placeholder="Email" value="test@test.com" required>
-                    <input type="password" name="password" placeholder="Password" value="test123" required>
-                    <button type="submit">Test Form Submission</button>
-                </form>
-                <div id="formResult" class="result"></div>
-            </div>
-        </div>
-        
-        <script>
-            function showResult(elementId, text, isError = false) {
-                const element = document.getElementById(elementId);
-                element.innerHTML = text;
-                element.className = 'result ' + (isError ? 'error' : 'success');
-            }
-            
-            async function testHealth() {
-                try {
-                    const response = await fetch('/api/health');
-                    const data = await response.json();
-                    showResult('apiResult', `✅ Health Check OK\n${JSON.stringify(data, null, 2)}`);
-                } catch (error) {
-                    showResult('apiResult', `❌ Error: ${error}`, true);
-                }
-            }
-            
-            async function testDebug() {
-                try {
-                    const response = await fetch('/api/debug');
-                    const data = await response.json();
-                    showResult('apiResult', `✅ Debug Info OK\n${JSON.stringify(data, null, 2)}`);
-                } catch (error) {
-                    showResult('apiResult', `❌ Error: ${error}`, true);
-                }
-            }
-            
-            async function testUsers() {
-                try {
-                    const response = await fetch('/api/users');
-                    const data = await response.json();
-                    showResult('apiResult', `✅ Users List OK\nTotal users: ${data.users ? data.users.length : 0}`);
-                } catch (error) {
-                    showResult('apiResult', `❌ Error: ${error}`, true);
-                }
-            }
-            
-            async function testRegister() {
-                try {
-                    const formData = new FormData();
-                    formData.append('username', 'testuser_' + Date.now());
-                    formData.append('email', 'test' + Date.now() + '@test.com');
-                    formData.append('password', 'test123');
-                    
-                    const response = await fetch('/api/register', {
-                        method: 'POST',
-                        body: formData
-                    });
-                    
-                    const text = await response.text();
-                    showResult('authResult', `Status: ${response.status}\nResponse: ${text}`);
-                } catch (error) {
-                    showResult('authResult', `❌ Error: ${error}`, true);
-                }
-            }
-            
-            async function testLogin() {
-                try {
-                    const formData = new FormData();
-                    formData.append('username', 'admin');
-                    formData.append('password', 'admin123');
-                    
-                    const response = await fetch('/api/login', {
-                        method: 'POST',
-                        body: formData
-                    });
-                    
-                    const text = await response.text();
-                    showResult('authResult', `Status: ${response.status}\nResponse: ${text}`);
-                } catch (error) {
-                    showResult('authResult', `❌ Error: ${error}`, true);
-                }
-            }
-            
-            async function testMe() {
-                try {
-                    const response = await fetch('/api/me');
-                    const text = await response.text();
-                    showResult('authResult', `Status: ${response.status}\nResponse: ${text}`);
-                } catch (error) {
-                    showResult('authResult', `❌ Error: ${error}`, true);
-                }
-            }
-            
-            async function testIndex() {
-                try {
-                    const response = await fetch('/index.html');
-                    showResult('staticResult', `Status: ${response.status}\nContent-Type: ${response.headers.get('content-type')}`);
-                } catch (error) {
-                    showResult('staticResult', `❌ Error: ${error}`, true);
-                }
-            }
-            
-            async function testChat() {
-                try {
-                    const response = await fetch('/chat');
-                    showResult('staticResult', `Status: ${response.status}\nContent-Type: ${response.headers.get('content-type')}`);
-                } catch (error) {
-                    showResult('staticResult', `❌ Error: ${error}`, true);
-                }
-            }
-            
-            async function testFormSubmit(event) {
-                event.preventDefault();
-                const form = event.target;
-                const formData = new FormData(form);
-                
-                try {
-                    const response = await fetch('/api/register', {
-                        method: 'POST',
-                        body: formData
-                    });
-                    
-                    const text = await response.text();
-                    showResult('formResult', `Status: ${response.status}\nResponse: ${text}`);
-                } catch (error) {
-                    showResult('formResult', `❌ Error: ${error}`, true);
-                }
-                
-                return false;
-            }
-            
-            // Run basic tests on load
-            window.addEventListener('load', () => {
-                testHealth();
-            });
-        </script>
-    </body>
-    </html>
-    """)
-
-# ========== АУТЕНТИФИКАЦИЯ ==========
+# ========== AUTH ENDPOINTS ==========
 
 @app.post("/api/register")
 @app.post("/api/auth/register")
@@ -397,12 +253,10 @@ async def register_user(
     db: Session = Depends(get_db)
 ):
     """Регистрация нового пользователя"""
-    print(f"🔵 Регистрация: username={username}, email={email}")
     try:
         # Проверяем уникальность username
         existing_user = db.query(User).filter(User.username == username).first()
         if existing_user:
-            print(f"❌ Имя пользователя уже занято: {username}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Имя пользователя уже занято"
@@ -411,7 +265,6 @@ async def register_user(
         # Проверяем уникальность email
         existing_email = db.query(User).filter(User.email == email).first()
         if existing_email:
-            print(f"❌ Email уже используется: {email}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email уже используется"
@@ -419,14 +272,12 @@ async def register_user(
         
         # Проверяем пароль
         if len(password) < 6:
-            print(f"❌ Пароль слишком короткий: {len(password)} символов")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Пароль должен быть не менее 6 символов"
             )
         
         if len(password) > 72:
-            print(f"❌ Пароль слишком длинный: {len(password)} символов")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Пароль не должен превышать 72 символа"
@@ -443,8 +294,6 @@ async def register_user(
         db.add(user)
         db.commit()
         db.refresh(user)
-        
-        print(f"✅ Пользователь создан: {username} (ID: {user.id})")
         
         # Создаем токен
         access_token = create_access_token(
@@ -465,12 +314,11 @@ async def register_user(
         
         response = JSONResponse(content=response_data)
         
-        # Устанавливаем токен в куки
         response.set_cookie(
             key="access_token",
             value=access_token,
             httponly=True,
-            max_age=1800,  # 30 минут
+            max_age=1800,
             samesite="lax"
         )
         
@@ -479,7 +327,6 @@ async def register_user(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Ошибка регистрации: {str(e)}")
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -494,17 +341,13 @@ async def login_user(
     db: Session = Depends(get_db)
 ):
     """Вход пользователя"""
-    print(f"🔵 Вход: username={username}")
     try:
         user = db.query(User).filter(User.username == username).first()
         if not user or not verify_password(password, user.password_hash):
-            print(f"❌ Неверный логин/пароль для: {username}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Неверное имя пользователя или пароль"
             )
-        
-        print(f"✅ Успешный вход: {username} (ID: {user.id})")
         
         # Создаем токен
         access_token = create_access_token(
@@ -526,7 +369,6 @@ async def login_user(
         
         response = JSONResponse(content=response_data)
         
-        # Устанавливаем токен в куки
         response.set_cookie(
             key="access_token",
             value=access_token,
@@ -540,7 +382,6 @@ async def login_user(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Ошибка входа: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка входа: {str(e)}"
@@ -549,63 +390,23 @@ async def login_user(
 @app.get("/api/me")
 @app.get("/api/auth/me")
 async def get_current_user_info(
-    request: Request,
-    db: Session = Depends(get_db)
+    user: User = Depends(get_current_user)
 ):
     """Получение информации о текущем пользователе"""
-    print("🔵 Получение информации о пользователе")
-    try:
-        token = request.cookies.get("access_token")
-        print(f"   Токен из куки: {'Есть' if token else 'Нет'}")
-        
-        if not token:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Требуется аутентификация"
-            )
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Недействительный токен"
-            )
-        
-        user_id = payload.get("user_id")
-        user = db.query(User).filter(User.id == user_id).first()
-        
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Пользователь не найден"
-            )
-        
-        print(f"✅ Пользователь найден: {user.username} (ID: {user.id})")
-        
-        return {
-            "success": True,
-            "user": {
-                "id": user.id,
-                "username": user.username,
-                "display_name": user.display_name,
-                "email": user.email,
-                "avatar_url": user.avatar_url,
-                "is_online": user.is_online,
-                "created_at": user.created_at.isoformat() if user.created_at else None
-            }
+    return {
+        "success": True,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "display_name": user.display_name,
+            "email": user.email,
+            "avatar_url": user.avatar_url,
+            "is_online": user.is_online,
+            "created_at": user.created_at.isoformat() if user.created_at else None
         }
-        
-    except HTTPException as e:
-        print(f"❌ Ошибка авторизации: {e.detail}")
-        raise
-    except Exception as e:
-        print(f"❌ Ошибка загрузки пользователя: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка загрузки пользователя: {str(e)}"
-        )
+    }
 
-# ========== ПОЛЬЗОВАТЕЛИ И СООБЩЕНИЯ ==========
+# ========== USERS ENDPOINTS ==========
 
 @app.get("/api/users")
 async def get_users(
@@ -663,6 +464,41 @@ async def get_users(
             detail=f"Ошибка загрузки пользователей: {str(e)}"
         )
 
+@app.get("/api/users/{user_id}")
+async def get_user_by_id(user_id: int, db: Session = Depends(get_db)):
+    """Получение информации о конкретном пользователе"""
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Пользователь не найден"
+            )
+        
+        return {
+            "success": True,
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "display_name": user.display_name,
+                "avatar_url": user.avatar_url,
+                "is_online": user.is_online,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "email": user.email
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки пользователя: {str(e)}"
+        )
+
+# ========== MESSAGES ENDPOINTS ==========
+
 @app.get("/api/messages")
 async def get_messages(
     page: int = Query(1, ge=1),
@@ -714,6 +550,565 @@ async def get_messages(
             detail=f"Ошибка загрузки сообщений: {str(e)}"
         )
 
+@app.get("/api/messages/chat/{chat_type}/{chat_id}")
+async def get_chat_messages(
+    chat_type: str,
+    chat_id: int,
+    page: int = Query(1, ge=1),
+    limit: int = Query(100, ge=1, le=200),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Получение сообщений для чата"""
+    try:
+        query = db.query(Message)
+        
+        if chat_type == "private":
+            # Личные сообщения с пользователем
+            query = query.filter(
+                or_(
+                    and_(Message.from_user_id == user.id, Message.to_user_id == chat_id),
+                    and_(Message.from_user_id == chat_id, Message.to_user_id == user.id)
+                )
+            )
+        elif chat_type == "group":
+            # Сообщения группы
+            query = query.filter(Message.group_id == chat_id)
+        elif chat_type == "channel":
+            # Сообщения канала
+            query = query.filter(Message.channel_id == chat_id)
+        else:
+            raise HTTPException(status_code=400, detail="Неверный тип чата")
+        
+        total = query.count()
+        messages = query.order_by(desc(Message.created_at)) \
+                       .offset((page - 1) * limit) \
+                       .limit(limit) \
+                       .all()
+        
+        messages_data = []
+        for msg in messages:
+            sender = None
+            if msg.from_user_id:
+                sender = db.query(User).filter(User.id == msg.from_user_id).first()
+            
+            messages_data.append({
+                "id": msg.id,
+                "content": msg.content,
+                "type": msg.message_type,
+                "media_url": msg.media_url,
+                "media_size": msg.media_size,
+                "filename": msg.filename,
+                "is_my_message": msg.from_user_id == user.id,
+                "from_user_id": msg.from_user_id,
+                "group_id": msg.group_id,
+                "channel_id": msg.channel_id,
+                "reactions": msg.reactions or {},
+                "sender": {
+                    "id": sender.id if sender else None,
+                    "username": sender.username if sender else None,
+                    "display_name": sender.display_name if sender else None,
+                    "avatar_url": sender.avatar_url if sender else None
+                } if sender else None,
+                "created_at": msg.created_at.isoformat() if msg.created_at else None
+            })
+        
+        messages_data.reverse()  # Чтобы старые сообщения были в начале
+        
+        return {
+            "success": True,
+            "messages": messages_data,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "pages": (total + limit - 1) // limit
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки сообщений: {str(e)}"
+        )
+
+@app.post("/api/messages")
+async def create_message(
+    content: str = Form(...),
+    message_type: str = Form("text"),
+    to_user_id: Optional[int] = Form(None),
+    group_id: Optional[int] = Form(None),
+    channel_id: Optional[int] = Form(None),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Создание нового сообщения"""
+    try:
+        if not content or len(content.strip()) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Сообщение не может быть пустым"
+            )
+        
+        # Проверяем, куда отправляется сообщение
+        chat_type = None
+        if to_user_id:
+            chat_type = "private"
+            # Проверяем существование получателя
+            recipient = db.query(User).filter(User.id == to_user_id).first()
+            if not recipient:
+                raise HTTPException(status_code=404, detail="Получатель не найден")
+        elif group_id:
+            chat_type = "group"
+            # Проверяем существование группы
+            group = db.query(Group).filter(Group.id == group_id).first()
+            if not group:
+                raise HTTPException(status_code=404, detail="Группа не найдена")
+        elif channel_id:
+            chat_type = "channel"
+            # Проверяем существование канала
+            channel = db.query(Channel).filter(Channel.id == channel_id).first()
+            if not channel:
+                raise HTTPException(status_code=404, detail="Канал не найден")
+        else:
+            raise HTTPException(status_code=400, detail="Не указан получатель")
+        
+        # Создаем сообщение
+        message = Message(
+            from_user_id=user.id,
+            to_user_id=to_user_id,
+            group_id=group_id,
+            channel_id=channel_id,
+            content=content.strip(),
+            message_type=message_type
+        )
+        
+        db.add(message)
+        db.commit()
+        db.refresh(message)
+        
+        # Уведомляем через WebSocket
+        ws_message = {
+            "type": "message",
+            "chat_type": chat_type,
+            "chat_id": to_user_id or group_id or channel_id,
+            "message": {
+                "id": message.id,
+                "content": message.content,
+                "type": message.message_type,
+                "is_my_message": False,
+                "from_user_id": message.from_user_id,
+                "group_id": message.group_id,
+                "channel_id": message.channel_id,
+                "sender": {
+                    "id": user.id,
+                    "username": user.username,
+                    "display_name": user.display_name,
+                    "avatar_url": user.avatar_url
+                },
+                "created_at": message.created_at.isoformat() if message.created_at else None
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        # Отправляем получателю/участникам
+        if chat_type == "private" and to_user_id:
+            await manager.send_to_user(to_user_id, ws_message)
+        elif chat_type == "group" and group_id:
+            # TODO: Отправка участникам группы
+            await manager.broadcast(ws_message, user.id)
+        elif chat_type == "channel" and channel_id:
+            # TODO: Отправка подписчикам канала
+            await manager.broadcast(ws_message, user.id)
+        
+        return {
+            "success": True,
+            "message": "Сообщение отправлено",
+            "data": {
+                "id": message.id,
+                "content": message.content,
+                "type": message.message_type,
+                "created_at": message.created_at.isoformat() if message.created_at else None
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка отправки сообщения: {str(e)}"
+        )
+
+# ========== CHATS ENDPOINTS ==========
+
+@app.get("/api/chats/all")
+async def get_all_chats(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Получение всех чатов пользователя"""
+    try:
+        # Личные чаты (пользователи, с которыми есть переписка)
+        private_messages = db.query(Message).filter(
+            or_(Message.from_user_id == user.id, Message.to_user_id == user.id)
+        ).all()
+        
+        # Собираем уникальных пользователей из переписки
+        user_ids = set()
+        for msg in private_messages:
+            if msg.from_user_id != user.id:
+                user_ids.add(msg.from_user_id)
+            if msg.to_user_id and msg.to_user_id != user.id:
+                user_ids.add(msg.to_user_id)
+        
+        private_chats = []
+        for uid in user_ids:
+            contact = db.query(User).filter(User.id == uid).first()
+            if contact:
+                # Получаем последнее сообщение
+                last_msg = db.query(Message).filter(
+                    or_(
+                        and_(Message.from_user_id == user.id, Message.to_user_id == uid),
+                        and_(Message.from_user_id == uid, Message.to_user_id == user.id)
+                    )
+                ).order_by(desc(Message.created_at)).first()
+                
+                private_chats.append({
+                    "id": contact.id,
+                    "name": contact.display_name or contact.username,
+                    "avatar_url": contact.avatar_url,
+                    "is_online": contact.is_online,
+                    "last_message": {
+                        "content": last_msg.content if last_msg else "",
+                        "timestamp": last_msg.created_at.isoformat() if last_msg else None
+                    } if last_msg else None
+                })
+        
+        # Группы пользователя
+        user_groups = db.query(Group).join(GroupMember).filter(GroupMember.user_id == user.id).all()
+        group_chats = []
+        for group in user_groups:
+            # Получаем последнее сообщение
+            last_msg = db.query(Message).filter(Message.group_id == group.id)\
+                .order_by(desc(Message.created_at)).first()
+            
+            group_chats.append({
+                "id": group.id,
+                "name": group.name,
+                "avatar_url": group.avatar_url,
+                "members_count": group.members_count or 0,
+                "last_message": {
+                    "content": last_msg.content if last_msg else "",
+                    "timestamp": last_msg.created_at.isoformat() if last_msg else None
+                } if last_msg else None
+            })
+        
+        # Каналы пользователя
+        user_channels = db.query(Channel).join(Subscription).filter(Subscription.user_id == user.id).all()
+        channel_chats = []
+        for channel in user_channels:
+            # Получаем последнее сообщение
+            last_msg = db.query(Message).filter(Message.channel_id == channel.id)\
+                .order_by(desc(Message.created_at)).first()
+            
+            channel_chats.append({
+                "id": channel.id,
+                "name": channel.name,
+                "avatar_url": channel.avatar_url,
+                "subscribers_count": channel.subscribers_count or 0,
+                "last_message": {
+                    "content": last_msg.content if last_msg else "",
+                    "timestamp": last_msg.created_at.isoformat() if last_msg else None
+                } if last_msg else None
+            })
+        
+        return {
+            "success": True,
+            "private_chats": private_chats,
+            "group_chats": group_chats,
+            "channel_chats": channel_chats
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки чатов: {str(e)}"
+        )
+
+# ========== GROUPS ENDPOINTS ==========
+
+@app.get("/api/groups")
+async def get_groups(
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    search: Optional[str] = Query(None),
+    public_only: bool = Query(False),
+    db: Session = Depends(get_db)
+):
+    """Получение списка групп"""
+    try:
+        query = db.query(Group)
+        
+        if public_only:
+            query = query.filter(Group.is_public == True)
+        
+        if search:
+            search_filter = f"%{search}%"
+            query = query.filter(
+                (Group.name.ilike(search_filter)) |
+                (Group.description.ilike(search_filter))
+            )
+        
+        total = query.count()
+        groups = query.order_by(desc(Group.created_at)) \
+                     .offset((page - 1) * limit) \
+                     .limit(limit) \
+                     .all()
+        
+        groups_data = []
+        for group in groups:
+            groups_data.append({
+                "id": group.id,
+                "name": group.name,
+                "description": group.description,
+                "avatar_url": group.avatar_url,
+                "is_public": group.is_public,
+                "members_count": group.members_count or 0,
+                "created_at": group.created_at.isoformat() if group.created_at else None
+            })
+        
+        return {
+            "success": True,
+            "groups": groups_data,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "pages": (total + limit - 1) // limit
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки групп: {str(e)}"
+        )
+
+@app.post("/api/groups")
+async def create_group(
+    name: str = Form(...),
+    description: Optional[str] = Form(None),
+    is_public: bool = Form(True),
+    avatar: Optional[UploadFile] = File(None),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Создание новой группы"""
+    try:
+        # Проверяем уникальность имени
+        existing_group = db.query(Group).filter(Group.name == name).first()
+        if existing_group:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Группа с таким названием уже существует"
+            )
+        
+        # Обрабатываем аватар
+        avatar_url = None
+        if avatar:
+            file_ext = avatar.filename.split('.')[-1]
+            filename = f"{uuid.uuid4()}.{file_ext}"
+            file_path = UPLOAD_DIR / "avatars" / filename
+            
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(avatar.file, buffer)
+            
+            avatar_url = f"/uploads/avatars/{filename}"
+        
+        # Создаем группу
+        group = Group(
+            name=name,
+            description=description,
+            is_public=is_public,
+            avatar_url=avatar_url,
+            owner_id=user.id,
+            members_count=1
+        )
+        
+        db.add(group)
+        db.commit()
+        db.refresh(group)
+        
+        # Добавляем создателя как участника
+        group_member = GroupMember(
+            group_id=group.id,
+            user_id=user.id,
+            role="owner"
+        )
+        db.add(group_member)
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Группа создана",
+            "group": {
+                "id": group.id,
+                "name": group.name,
+                "description": group.description,
+                "avatar_url": group.avatar_url,
+                "is_public": group.is_public,
+                "members_count": group.members_count
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка создания группы: {str(e)}"
+        )
+
+# ========== CHANNELS ENDPOINTS ==========
+
+@app.get("/api/channels")
+async def get_channels(
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    search: Optional[str] = Query(None),
+    public_only: bool = Query(False),
+    db: Session = Depends(get_db)
+):
+    """Получение списка каналов"""
+    try:
+        query = db.query(Channel)
+        
+        if public_only:
+            query = query.filter(Channel.is_public == True)
+        
+        if search:
+            search_filter = f"%{search}%"
+            query = query.filter(
+                (Channel.name.ilike(search_filter)) |
+                (Channel.description.ilike(search_filter))
+            )
+        
+        total = query.count()
+        channels = query.order_by(desc(Channel.created_at)) \
+                       .offset((page - 1) * limit) \
+                       .limit(limit) \
+                       .all()
+        
+        channels_data = []
+        for channel in channels:
+            channels_data.append({
+                "id": channel.id,
+                "name": channel.name,
+                "description": channel.description,
+                "avatar_url": channel.avatar_url,
+                "is_public": channel.is_public,
+                "subscribers_count": channel.subscribers_count or 0,
+                "created_at": channel.created_at.isoformat() if channel.created_at else None
+            })
+        
+        return {
+            "success": True,
+            "channels": channels_data,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "pages": (total + limit - 1) // limit
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки каналов: {str(e)}"
+        )
+
+@app.post("/api/channels")
+async def create_channel(
+    name: str = Form(...),
+    description: Optional[str] = Form(None),
+    is_public: bool = Form(True),
+    avatar: Optional[UploadFile] = File(None),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Создание нового канала"""
+    try:
+        # Проверяем уникальность имени
+        existing_channel = db.query(Channel).filter(Channel.name == name).first()
+        if existing_channel:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Канал с таким названием уже существует"
+            )
+        
+        # Обрабатываем аватар
+        avatar_url = None
+        if avatar:
+            file_ext = avatar.filename.split('.')[-1]
+            filename = f"{uuid.uuid4()}.{file_ext}"
+            file_path = UPLOAD_DIR / "avatars" / filename
+            
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(avatar.file, buffer)
+            
+            avatar_url = f"/uploads/avatars/{filename}"
+        
+        # Создаем канал
+        channel = Channel(
+            name=name,
+            description=description,
+            is_public=is_public,
+            avatar_url=avatar_url,
+            owner_id=user.id,
+            subscribers_count=1
+        )
+        
+        db.add(channel)
+        db.commit()
+        db.refresh(channel)
+        
+        # Добавляем создателя как подписчика
+        subscription = Subscription(
+            channel_id=channel.id,
+            user_id=user.id,
+            role="owner"
+        )
+        db.add(subscription)
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Канал создан",
+            "channel": {
+                "id": channel.id,
+                "name": channel.name,
+                "description": channel.description,
+                "avatar_url": channel.avatar_url,
+                "is_public": channel.is_public,
+                "subscribers_count": channel.subscribers_count
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка создания канала: {str(e)}"
+        )
+
 # ========== WEB SOCKET ==========
 
 @app.websocket("/ws/{user_id}")
@@ -735,44 +1130,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
     
     try:
         while True:
-            data = await websocket.receive_text()
-            message_data = json.loads(data)
-            message_type = message_data.get("type", "message")
-            
-            if message_type == "message":
-                content = message_data.get("content", "").strip()
-                if content:
-                    # Сохраняем сообщение в БД
-                    db = SessionLocal()
-                    try:
-                        message = Message(
-                            from_user_id=user_id,
-                            content=content,
-                            message_type="text"
-                        )
-                        db.add(message)
-                        db.commit()
-                        
-                        # Отправляем всем подключенным пользователям
-                        for uid, ws_conn in manager.active_connections.items():
-                            if uid != user_id:
-                                await ws_conn.send_text(json.dumps({
-                                    "type": "message",
-                                    "from_user_id": user_id,
-                                    "content": content,
-                                    "timestamp": datetime.utcnow().isoformat()
-                                }))
-                    finally:
-                        db.close()
-            elif message_type == "typing":
-                # Пересылаем информацию о наборе текста
-                for uid, ws_conn in manager.active_connections.items():
-                    if uid != user_id:
-                        await ws_conn.send_text(json.dumps({
-                            "type": "typing",
-                            "user_id": user_id,
-                            "is_typing": message_data.get("is_typing", True)
-                        }))
+            data = await websocket.receive_json()
+            await handle_websocket_message(data, user_id)
                         
     except WebSocketDisconnect:
         print(f"📴 User disconnected: {user_id}")
@@ -790,84 +1149,169 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
         finally:
             db.close()
 
-# ========== СТАТИЧЕСКИЕ ФАЙЛЫ (В САМОМ КОНЦЕ!) ==========
+async def handle_websocket_message(data: Dict[str, Any], user_id: int):
+    """Обработка сообщений WebSocket"""
+    message_type = data.get("type")
+    
+    if message_type == "message":
+        await handle_chat_message(data, user_id)
+    elif message_type == "typing":
+        await handle_typing_indicator(data, user_id)
+    elif message_type == "reaction":
+        await handle_message_reaction(data, user_id)
+    elif message_type == "call":
+        await handle_call(data, user_id)
 
-# Монтируем статические файлы фронтенда ТОЛЬКО ПОСЛЕ ВСЕХ API РОУТОВ
+async def handle_chat_message(data: Dict[str, Any], user_id: int):
+    """Обработка сообщения чата"""
+    chat_type = data.get("chat_type")
+    chat_id = data.get("chat_id")
+    content = data.get("content", "").strip()
+    
+    if not content:
+        return
+    
+    db = SessionLocal()
+    try:
+        # Сохраняем сообщение в БД
+        message = Message(
+            from_user_id=user_id,
+            content=content,
+            message_type=data.get("message_type", "text")
+        )
+        
+        if chat_type == "private":
+            message.to_user_id = chat_id
+        elif chat_type == "group":
+            message.group_id = chat_id
+        elif chat_type == "channel":
+            message.channel_id = chat_id
+        
+        db.add(message)
+        db.commit()
+        db.refresh(message)
+        
+        # Получаем информацию об отправителе
+        sender = db.query(User).filter(User.id == user_id).first()
+        
+        # Формируем сообщение для отправки
+        ws_message = {
+            "type": "message",
+            "chat_type": chat_type,
+            "chat_id": chat_id,
+            "message": {
+                "id": message.id,
+                "content": message.content,
+                "type": message.message_type,
+                "is_my_message": False,
+                "from_user_id": message.from_user_id,
+                "group_id": message.group_id,
+                "channel_id": message.channel_id,
+                "sender": {
+                    "id": sender.id,
+                    "username": sender.username,
+                    "display_name": sender.display_name,
+                    "avatar_url": sender.avatar_url
+                } if sender else None,
+                "created_at": message.created_at.isoformat() if message.created_at else None
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        # Отправляем сообщение
+        if chat_type == "private":
+            # Отправляем отправителю (подтверждение)
+            await manager.send_to_user(user_id, {
+                **ws_message,
+                "message": {**ws_message["message"], "is_my_message": True}
+            })
+            # Отправляем получателю
+            if chat_id != user_id:
+                await manager.send_to_user(chat_id, ws_message)
+        elif chat_type == "group":
+            # Отправляем всем участникам группы
+            await manager.broadcast_to_group(chat_id, ws_message, user_id)
+        elif chat_type == "channel":
+            # Отправляем всем подписчикам канала
+            await manager.broadcast(ws_message, user_id)
+            
+    except Exception as e:
+        print(f"❌ Ошибка обработки сообщения: {e}")
+    finally:
+        db.close()
+
+async def handle_typing_indicator(data: Dict[str, Any], user_id: int):
+    """Обработка индикатора набора текста"""
+    chat_type = data.get("chat_type")
+    chat_id = data.get("chat_id")
+    is_typing = data.get("is_typing", True)
+    
+    typing_message = {
+        "type": "typing",
+        "user_id": user_id,
+        "chat_type": chat_type,
+        "chat_id": chat_id,
+        "is_typing": is_typing,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    
+    if chat_type == "private":
+        # Отправляем получателю
+        if chat_id != user_id:
+            await manager.send_to_user(chat_id, typing_message)
+    elif chat_type in ["group", "channel"]:
+        # Отправляем всем в чате кроме отправителя
+        await manager.broadcast(typing_message, user_id)
+
+async def handle_message_reaction(data: Dict[str, Any], user_id: int):
+    """Обработка реакции на сообщение"""
+    # TODO: Реализовать реакции
+    pass
+
+async def handle_call(data: Dict[str, Any], user_id: int):
+    """Обработка звонка"""
+    # TODO: Реализовать звонки
+    pass
+
+# ========== STATIC FILES ==========
+
+# Монтируем статические файлы в самом конце
 if frontend_dir.exists():
     print(f"✅ Frontend found: {frontend_dir}")
-    
-    @app.get("/")
-    async def serve_index():
-        """Главная страница"""
-        index_path = frontend_dir / "index.html"
-        if index_path.exists():
-            return FileResponse(str(index_path))
-        return HTMLResponse("<h1>DevNet Messenger</h1><p>Frontend not found</p>")
-    
-    @app.get("/chat")
-    async def serve_chat():
-        """Страница чата"""
-        chat_path = frontend_dir / "chat.html"
-        if chat_path.exists():
-            return FileResponse(str(chat_path))
-        return RedirectResponse("/")
-    
-    # Монтируем статические файлы
-    app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
-    
-    # Обработчик для остальных файлов
-    @app.get("/{path:path}")
-    async def serve_static_files(path: str):
-        """Сервит статические файлы"""
-        # Игнорируем API маршруты
-        if path.startswith("api/"):
-            return JSONResponse(
-                status_code=404,
-                content={"detail": "API endpoint not found"}
-            )
-        
-        file_path = frontend_dir / path
-        
-        # Если это путь к файлу, отдаем его
-        if file_path.exists() and file_path.is_file():
-            return FileResponse(str(file_path))
-        
-        # Если это директория или файл не найден, проверяем HTML
-        if not path or "." not in path:
-            html_path = frontend_dir / f"{path}.html" if path else frontend_dir / "index.html"
-            if html_path.exists():
-                return FileResponse(str(html_path))
-        
-        # Если ничего не найдено, возвращаем index.html
-        index_path = frontend_dir / "index.html"
-        if index_path.exists():
-            return FileResponse(str(index_path))
-        
-        return JSONResponse(
-            status_code=404,
-            content={"detail": "File not found"}
-        )
+    app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
 else:
     print(f"⚠️  Frontend not found: {frontend_dir}")
-    
-    @app.get("/")
-    async def serve_index_fallback():
-        return HTMLResponse("""
-        <!DOCTYPE html>
-        <html>
-        <head><title>DevNet Messenger</title></head>
-        <body>
-            <h1>DevNet Messenger</h1>
-            <p>Frontend files not found. Please check your deployment.</p>
-            <a href="/test">Go to Test Page</a>
-        </body>
-        </html>
-        """)
 
 # Монтируем директорию загрузок
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
-# ========== ЗАПУСК СЕРВЕРА ==========
+# ========== FALLBACK ROUTES ==========
+
+@app.get("/{path:path}")
+async def serve_frontend(path: str):
+    """Сервим статические файлы фронтенда"""
+    if path.startswith("api/"):
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "API endpoint not found"}
+        )
+    
+    file_path = frontend_dir / path
+    
+    if file_path.exists() and file_path.is_file():
+        return FileResponse(str(file_path))
+    
+    # Если файл не найден, отдаем index.html
+    index_path = frontend_dir / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
+    
+    return JSONResponse(
+        status_code=404,
+        content={"detail": "File not found"}
+    )
+
+# ========== START SERVER ==========
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
@@ -877,7 +1321,6 @@ if __name__ == "__main__":
     print(f"📁 Директория загрузок: {UPLOAD_DIR}")
     print(f"📁 Директория фронтенда: {frontend_dir}")
     print(f"🔗 API документация: http://localhost:{port}/api/docs")
-    print(f"🔧 Тестовая страница: http://localhost:{port}/test")
     print(f"💬 Чат: http://localhost:{port}/chat")
     print("👑 Тестовый пользователь: admin / admin123")
     print("=" * 50)
