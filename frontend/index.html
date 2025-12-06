@@ -767,7 +767,7 @@
         }
     });
 
-    // Обработка формы входа
+        // Обработка формы входа
     document.getElementById('loginForm').addEventListener('submit', async function(e) {
         e.preventDefault();
         console.log("Login form submitted");
@@ -776,7 +776,7 @@
         const username = form.querySelector('[name="username"]').value;
         const password = form.querySelector('[name="password"]').value;
         
-        console.log("Login data:", { username, password });
+        console.log("Login attempt:", username);
         
         const resultDiv = document.getElementById('loginSuccess');
         const loginBtn = document.getElementById('loginBtn');
@@ -825,9 +825,9 @@
                 resultDiv.style.display = 'block';
                 form.reset();
                 
-                console.log("Login successful, redirecting to chat...");
+                console.log("Login successful, user:", result.user);
+                console.log("Redirecting to /chat in 2 seconds...");
                 
-                // Автоматическая авторизация - токен уже в cookies
                 // Перенаправляем в чат через 2 секунды
                 setTimeout(() => {
                     window.location.href = '/chat';
