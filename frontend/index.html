@@ -882,18 +882,83 @@
         console.log("Current URL:", window.location.href);
         console.log("API endpoints should be at:", window.location.origin + "/api/register");
     });
-            // Добавить в конец скрипта
-    console.log("Current URL:", window.location.href);
-    console.log("Check API endpoints:");
-    console.log("  /api/login - POST для входа");
-    console.log("  /api/register - POST для регистрации");
-    console.log("  /api/me - GET для проверки авторизации");
+       // Добавить в конец скрипта в index.html
+    console.log("Checking authentication...");
     
-    // Проверяем доступность API
-    fetch('/api/health')
-        .then(response => response.json())
-        .then(data => console.log("API health check:", data))
-        .catch(error => console.error("API not available:", error));
+    // Проверяем авторизацию сразу при загрузке
+    async function checkAuth() {
+        try {
+            console.log("Fetching /api/me...");
+            const response = await fetch('/api/me');
+            console.log("Response status:", response.status);
+            
+            if (response.ok) {
+                const data = await response.json();
+                console.log("User data:", data);
+                
+                if (data.success && data.user) {
+                    console.log("✅ User is authenticated:", data.user.username);
+                    
+                    // Показываем приветствие
+                    const registerSuccess = document.getElementById('registerSuccess');
+                    if (registerSuccess) {
+                        registerSuccess.innerHTML = 
+                            `✅ Вы уже авторизованы как <strong>${data.user.display_name}</strong>! <br>
+                            <a href="/chat" style="color: var(--primary); text-decoration: none; margin-top: 1rem; display: inline-block;">Перейти в чат →</a>`;
+                        registerSuccess.style.display = 'block';
+                    }
+                    
+                    // Показываем в форме входа
+                    const loginSuccess = document.getElementById('loginSuccess');
+                    if (loginSuccess) {
+                        loginSuccess.innerHTML = 
+                            `✅ Вы уже авторизованы как <strong>${data.user.display_name}</strong>! <br>
+                            <a href="/chat" style="color: var(--primary); text-decoration: none; margin-top: 1rem; display: inline-block;">Перейти в чат →</a>`;
+                        loginSuccess.style.display = 'block';
+                    }
+                    
+                    // Прячем формы
+                    document.getElementById('registerForm').style.display = 'none';
+                    document.getElementById('loginForm').style.display = 'none';
+                    
+                    // Показываем кнопку перехода в чат
+                    const authContainer = document.querySelector('.auth-container');
+                    if (authContainer) {
+                        const chatButton = document.createElement('div');
+                        chatButton.innerHTML = `
+                            <div style="text-align: center; margin-top: 2rem; padding: 2rem; background: rgba(16, 163, 127, 0.1); border-radius: 15px;">
+                                <h3 style="margin-bottom: 1rem;">Добро пожаловать, ${data.user.display_name}!</h3>
+                                <p style="margin-bottom: 1.5rem; color: var(--text-secondary);">Вы уже авторизованы в системе</p>
+                                <a href="/chat" style="display: inline-block; padding: 1rem 2rem; background: var(--gradient); color: white; text-decoration: none; border-radius: 12px; font-weight: 600;">
+                                    Перейти в чат →
+                                </a>
+                            </div>
+                        `;
+                        authContainer.appendChild(chatButton);
+                    }
+                }
+            } else {
+                console.log("❌ User is not authenticated or token expired");
+                
+                // Пробуем специальный эндпоинт для проверки
+                try {
+                    const checkResponse = await fetch('/api/auth/check');
+                    const checkData = await checkResponse.json();
+                    console.log("Auth check:", checkData);
+                } catch (checkError) {
+                    console.log("Auth check failed:", checkError);
+                }
+            }
+        } catch (error) {
+            console.log("❌ Auth check error:", error);
+        }
+    }
+    
+    // Запускаем проверку при загрузке
+    window.addEventListener('load', checkAuth);
+    
+    // Также проверяем куки
+    console.log("Document cookies:", document.cookie);
         
 </script>
 </html>
