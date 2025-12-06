@@ -161,19 +161,6 @@ frontend_dir = project_root / "frontend"
 print(f"📁 Project root: {project_root}")
 print(f"📁 Frontend directory: {frontend_dir}")
 
-# Монтируем статические файлы фронтенда
-if frontend_dir.exists():
-    print(f"✅ Frontend found: {frontend_dir}")
-    # Монтируем всю директорию фронтенда как статическую
-    app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
-else:
-    print(f"⚠️  Frontend not found: {frontend_dir}")
-    # Создаем минимальный фронтенд если его нет
-    frontend_dir.mkdir(exist_ok=True)
-
-# Монтируем директорию загрузок
-app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
-
 # ========== HEALTH CHECK (ВАЖНО ДЛЯ RAILWAY) ==========
 
 @app.get("/health")
@@ -206,24 +193,197 @@ async def debug_info():
         "frontend_exists": frontend_dir.exists()
     }
 
-# ========== МИДЛВЭР ДЛЯ ЛОГИРОВАНИЯ ==========
+# ========== ТЕСТОВЫЕ ЭНДПОИНТЫ ДЛЯ ОТЛАДКИ ==========
 
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    """Логируем все входящие запросы"""
-    print(f"📥 {request.method} {request.url.path}")
-    if request.method in ["POST", "PUT"]:
-        try:
-            # Для отладки логируем тело POST запросов
-            body = await request.body()
-            if body:
-                print(f"   Body: {body[:500]}")  # Логируем первые 500 символов
-        except:
-            pass
-    
-    response = await call_next(request)
-    print(f"📤 {request.method} {request.url.path} - Status: {response.status_code}")
-    return response
+@app.get("/test")
+async def test_page():
+    """Тестовая страница для проверки работы"""
+    return HTMLResponse("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Test Page - DevNet Messenger</title>
+        <style>
+            body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
+            .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            h1 { color: #333; }
+            .test-section { margin: 20px 0; padding: 20px; border: 1px solid #ddd; border-radius: 8px; }
+            button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 5px; }
+            button:hover { background: #0056b3; }
+            .result { margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px; font-family: monospace; }
+            .success { color: green; }
+            .error { color: red; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>DevNet Messenger Test Page</h1>
+            
+            <div class="test-section">
+                <h2>1. Test API Endpoints</h2>
+                <button onclick="testHealth()">Test /api/health</button>
+                <button onclick="testDebug()">Test /api/debug</button>
+                <button onclick="testUsers()">Test /api/users</button>
+                <div id="apiResult" class="result"></div>
+            </div>
+            
+            <div class="test-section">
+                <h2>2. Test Authentication</h2>
+                <button onclick="testRegister()">Test Register (POST /api/register)</button>
+                <button onclick="testLogin()">Test Login (POST /api/login)</button>
+                <button onclick="testMe()">Test Get User Info (GET /api/me)</button>
+                <div id="authResult" class="result"></div>
+            </div>
+            
+            <div class="test-section">
+                <h2>3. Test Static Files</h2>
+                <button onclick="testIndex()">Load index.html</button>
+                <button onclick="testChat()">Load chat.html</button>
+                <div id="staticResult" class="result"></div>
+            </div>
+            
+            <div class="test-section">
+                <h2>4. Direct Form Test</h2>
+                <form id="testForm" onsubmit="return testFormSubmit(event)">
+                    <input type="text" name="username" placeholder="Username" value="testuser" required>
+                    <input type="email" name="email" placeholder="Email" value="test@test.com" required>
+                    <input type="password" name="password" placeholder="Password" value="test123" required>
+                    <button type="submit">Test Form Submission</button>
+                </form>
+                <div id="formResult" class="result"></div>
+            </div>
+        </div>
+        
+        <script>
+            function showResult(elementId, text, isError = false) {
+                const element = document.getElementById(elementId);
+                element.innerHTML = text;
+                element.className = 'result ' + (isError ? 'error' : 'success');
+            }
+            
+            async function testHealth() {
+                try {
+                    const response = await fetch('/api/health');
+                    const data = await response.json();
+                    showResult('apiResult', `✅ Health Check OK\n${JSON.stringify(data, null, 2)}`);
+                } catch (error) {
+                    showResult('apiResult', `❌ Error: ${error}`, true);
+                }
+            }
+            
+            async function testDebug() {
+                try {
+                    const response = await fetch('/api/debug');
+                    const data = await response.json();
+                    showResult('apiResult', `✅ Debug Info OK\n${JSON.stringify(data, null, 2)}`);
+                } catch (error) {
+                    showResult('apiResult', `❌ Error: ${error}`, true);
+                }
+            }
+            
+            async function testUsers() {
+                try {
+                    const response = await fetch('/api/users');
+                    const data = await response.json();
+                    showResult('apiResult', `✅ Users List OK\nTotal users: ${data.users ? data.users.length : 0}`);
+                } catch (error) {
+                    showResult('apiResult', `❌ Error: ${error}`, true);
+                }
+            }
+            
+            async function testRegister() {
+                try {
+                    const formData = new FormData();
+                    formData.append('username', 'testuser_' + Date.now());
+                    formData.append('email', 'test' + Date.now() + '@test.com');
+                    formData.append('password', 'test123');
+                    
+                    const response = await fetch('/api/register', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const text = await response.text();
+                    showResult('authResult', `Status: ${response.status}\nResponse: ${text}`);
+                } catch (error) {
+                    showResult('authResult', `❌ Error: ${error}`, true);
+                }
+            }
+            
+            async function testLogin() {
+                try {
+                    const formData = new FormData();
+                    formData.append('username', 'admin');
+                    formData.append('password', 'admin123');
+                    
+                    const response = await fetch('/api/login', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const text = await response.text();
+                    showResult('authResult', `Status: ${response.status}\nResponse: ${text}`);
+                } catch (error) {
+                    showResult('authResult', `❌ Error: ${error}`, true);
+                }
+            }
+            
+            async function testMe() {
+                try {
+                    const response = await fetch('/api/me');
+                    const text = await response.text();
+                    showResult('authResult', `Status: ${response.status}\nResponse: ${text}`);
+                } catch (error) {
+                    showResult('authResult', `❌ Error: ${error}`, true);
+                }
+            }
+            
+            async function testIndex() {
+                try {
+                    const response = await fetch('/index.html');
+                    showResult('staticResult', `Status: ${response.status}\nContent-Type: ${response.headers.get('content-type')}`);
+                } catch (error) {
+                    showResult('staticResult', `❌ Error: ${error}`, true);
+                }
+            }
+            
+            async function testChat() {
+                try {
+                    const response = await fetch('/chat');
+                    showResult('staticResult', `Status: ${response.status}\nContent-Type: ${response.headers.get('content-type')}`);
+                } catch (error) {
+                    showResult('staticResult', `❌ Error: ${error}`, true);
+                }
+            }
+            
+            async function testFormSubmit(event) {
+                event.preventDefault();
+                const form = event.target;
+                const formData = new FormData(form);
+                
+                try {
+                    const response = await fetch('/api/register', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const text = await response.text();
+                    showResult('formResult', `Status: ${response.status}\nResponse: ${text}`);
+                } catch (error) {
+                    showResult('formResult', `❌ Error: ${error}`, true);
+                }
+                
+                return false;
+            }
+            
+            // Run basic tests on load
+            window.addEventListener('load', () => {
+                testHealth();
+            });
+        </script>
+    </body>
+    </html>
+    """)
 
 # ========== АУТЕНТИФИКАЦИЯ ==========
 
@@ -445,65 +605,7 @@ async def get_current_user_info(
             detail=f"Ошибка загрузки пользователя: {str(e)}"
         )
 
-# ========== ТЕСТОВЫЕ ЭНДПОИНТЫ ДЛЯ ОТЛАДКИ ==========
-
-@app.get("/test")
-async def test_page():
-    """Тестовая страница для проверки работы"""
-    return HTMLResponse("""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Test Page</title>
-    </head>
-    <body>
-        <h1>DevNet Messenger Test</h1>
-        <button onclick="testRegister()">Test Register</button>
-        <button onclick="testLogin()">Test Login</button>
-        <div id="result"></div>
-        <script>
-            async function testRegister() {
-                const formData = new FormData();
-                formData.append('username', 'testuser');
-                formData.append('email', 'test@test.com');
-                formData.append('password', 'test123');
-                
-                const response = await fetch('/api/register', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                document.getElementById('result').innerHTML = 
-                    `Status: ${response.status}<br>Response: ${await response.text()}`;
-            }
-            
-            async function testLogin() {
-                const formData = new FormData();
-                formData.append('username', 'admin');
-                formData.append('password', 'admin123');
-                
-                const response = await fetch('/api/login', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                document.getElementById('result').innerHTML = 
-                    `Status: ${response.status}<br>Response: ${await response.text()}`;
-            }
-        </script>
-    </body>
-    </html>
-    """)
-
-@app.options("/api/register")
-@app.options("/api/auth/register")
-@app.options("/api/login")
-@app.options("/api/auth/login")
-async def options_handler():
-    """Обработчик OPTIONS запросов для CORS"""
-    return JSONResponse(content={"status": "ok"})
-
-# ========== ОСТАЛЬНЫЕ ЭНДПОИНТЫ ==========
+# ========== ПОЛЬЗОВАТЕЛИ И СООБЩЕНИЯ ==========
 
 @app.get("/api/users")
 async def get_users(
@@ -517,11 +619,9 @@ async def get_users(
     try:
         query = db.query(User)
         
-        # Фильтр по онлайн статусу
         if online_only:
             query = query.filter(User.is_online == True)
         
-        # Поиск по имени пользователя или отображаемому имени
         if search:
             search_filter = f"%{search}%"
             query = query.filter(
@@ -614,53 +714,6 @@ async def get_messages(
             detail=f"Ошибка загрузки сообщений: {str(e)}"
         )
 
-# ========== ФАЛЛБЭК ДЛЯ СТАТИЧЕСКИХ ФАЙЛОВ ==========
-
-@app.get("/{path:path}")
-async def serve_frontend(path: str):
-    """Сервим статические файлы фронтенда"""
-    # Если запрос идет к API, возвращаем 404
-    if path.startswith("api/"):
-        return JSONResponse(
-            status_code=404,
-            content={"detail": "API endpoint not found"}
-        )
-    
-    # Определяем путь к файлу
-    file_path = frontend_dir / path
-    
-    # Если запрос к корню или HTML файлу
-    if path == "" or path.endswith(".html") or "." not in path:
-        # Проверяем существование файла
-        if path == "" or path == "/":
-            index_path = frontend_dir / "index.html"
-        elif not path.endswith(".html"):
-            html_path = frontend_dir / f"{path}.html"
-            if html_path.exists():
-                file_path = html_path
-            else:
-                file_path = frontend_dir / "index.html"
-        else:
-            file_path = frontend_dir / path
-        
-        if file_path.exists():
-            return FileResponse(str(file_path))
-    
-    # Если файл существует, отдаем его
-    if file_path.exists() and file_path.is_file():
-        return FileResponse(str(file_path))
-    
-    # Если файл не найден, отдаем index.html
-    index_path = frontend_dir / "index.html"
-    if index_path.exists():
-        return FileResponse(str(index_path))
-    
-    # Если index.html тоже нет, возвращаем 404
-    return JSONResponse(
-        status_code=404,
-        content={"detail": "File not found"}
-    )
-
 # ========== WEB SOCKET ==========
 
 @app.websocket("/ws/{user_id}")
@@ -736,6 +789,83 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
             pass
         finally:
             db.close()
+
+# ========== СТАТИЧЕСКИЕ ФАЙЛЫ (В САМОМ КОНЦЕ!) ==========
+
+# Монтируем статические файлы фронтенда ТОЛЬКО ПОСЛЕ ВСЕХ API РОУТОВ
+if frontend_dir.exists():
+    print(f"✅ Frontend found: {frontend_dir}")
+    
+    @app.get("/")
+    async def serve_index():
+        """Главная страница"""
+        index_path = frontend_dir / "index.html"
+        if index_path.exists():
+            return FileResponse(str(index_path))
+        return HTMLResponse("<h1>DevNet Messenger</h1><p>Frontend not found</p>")
+    
+    @app.get("/chat")
+    async def serve_chat():
+        """Страница чата"""
+        chat_path = frontend_dir / "chat.html"
+        if chat_path.exists():
+            return FileResponse(str(chat_path))
+        return RedirectResponse("/")
+    
+    # Монтируем статические файлы
+    app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
+    
+    # Обработчик для остальных файлов
+    @app.get("/{path:path}")
+    async def serve_static_files(path: str):
+        """Сервит статические файлы"""
+        # Игнорируем API маршруты
+        if path.startswith("api/"):
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "API endpoint not found"}
+            )
+        
+        file_path = frontend_dir / path
+        
+        # Если это путь к файлу, отдаем его
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(str(file_path))
+        
+        # Если это директория или файл не найден, проверяем HTML
+        if not path or "." not in path:
+            html_path = frontend_dir / f"{path}.html" if path else frontend_dir / "index.html"
+            if html_path.exists():
+                return FileResponse(str(html_path))
+        
+        # Если ничего не найдено, возвращаем index.html
+        index_path = frontend_dir / "index.html"
+        if index_path.exists():
+            return FileResponse(str(index_path))
+        
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "File not found"}
+        )
+else:
+    print(f"⚠️  Frontend not found: {frontend_dir}")
+    
+    @app.get("/")
+    async def serve_index_fallback():
+        return HTMLResponse("""
+        <!DOCTYPE html>
+        <html>
+        <head><title>DevNet Messenger</title></head>
+        <body>
+            <h1>DevNet Messenger</h1>
+            <p>Frontend files not found. Please check your deployment.</p>
+            <a href="/test">Go to Test Page</a>
+        </body>
+        </html>
+        """)
+
+# Монтируем директорию загрузок
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 # ========== ЗАПУСК СЕРВЕРА ==========
 
