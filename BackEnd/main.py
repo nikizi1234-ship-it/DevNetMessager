@@ -206,9 +206,27 @@ async def debug_info():
         "frontend_exists": frontend_dir.exists()
     }
 
-# ========== СОВМЕСТИМОСТЬ СО СТАРЫМ ФРОНТЕНДОМ ==========
+# ========== МИДЛВЭР ДЛЯ ЛОГИРОВАНИЯ ==========
 
-# Редирект для старых URL на новые
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Логируем все входящие запросы"""
+    print(f"📥 {request.method} {request.url.path}")
+    if request.method in ["POST", "PUT"]:
+        try:
+            # Для отладки логируем тело POST запросов
+            body = await request.body()
+            if body:
+                print(f"   Body: {body[:500]}")  # Логируем первые 500 символов
+        except:
+            pass
+    
+    response = await call_next(request)
+    print(f"📤 {request.method} {request.url.path} - Status: {response.status_code}")
+    return response
+
+# ========== АУТЕНТИФИКАЦИЯ ==========
+
 @app.post("/api/register")
 @app.post("/api/auth/register")
 async def register_user(
@@ -219,10 +237,12 @@ async def register_user(
     db: Session = Depends(get_db)
 ):
     """Регистрация нового пользователя"""
+    print(f"🔵 Регистрация: username={username}, email={email}")
     try:
         # Проверяем уникальность username
         existing_user = db.query(User).filter(User.username == username).first()
         if existing_user:
+            print(f"❌ Имя пользователя уже занято: {username}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Имя пользователя уже занято"
@@ -231,6 +251,7 @@ async def register_user(
         # Проверяем уникальность email
         existing_email = db.query(User).filter(User.email == email).first()
         if existing_email:
+            print(f"❌ Email уже используется: {email}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email уже используется"
@@ -238,12 +259,14 @@ async def register_user(
         
         # Проверяем пароль
         if len(password) < 6:
+            print(f"❌ Пароль слишком короткий: {len(password)} символов")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Пароль должен быть не менее 6 символов"
             )
         
         if len(password) > 72:
+            print(f"❌ Пароль слишком длинный: {len(password)} символов")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Пароль не должен превышать 72 символа"
@@ -260,6 +283,8 @@ async def register_user(
         db.add(user)
         db.commit()
         db.refresh(user)
+        
+        print(f"✅ Пользователь создан: {username} (ID: {user.id})")
         
         # Создаем токен
         access_token = create_access_token(
@@ -294,6 +319,7 @@ async def register_user(
     except HTTPException:
         raise
     except Exception as e:
+        print(f"❌ Ошибка регистрации: {str(e)}")
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -308,13 +334,17 @@ async def login_user(
     db: Session = Depends(get_db)
 ):
     """Вход пользователя"""
+    print(f"🔵 Вход: username={username}")
     try:
         user = db.query(User).filter(User.username == username).first()
         if not user or not verify_password(password, user.password_hash):
+            print(f"❌ Неверный логин/пароль для: {username}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Неверное имя пользователя или пароль"
             )
+        
+        print(f"✅ Успешный вход: {username} (ID: {user.id})")
         
         # Создаем токен
         access_token = create_access_token(
@@ -350,6 +380,7 @@ async def login_user(
     except HTTPException:
         raise
     except Exception as e:
+        print(f"❌ Ошибка входа: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка входа: {str(e)}"
@@ -362,8 +393,11 @@ async def get_current_user_info(
     db: Session = Depends(get_db)
 ):
     """Получение информации о текущем пользователе"""
+    print("🔵 Получение информации о пользователе")
     try:
         token = request.cookies.get("access_token")
+        print(f"   Токен из куки: {'Есть' if token else 'Нет'}")
+        
         if not token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -386,6 +420,8 @@ async def get_current_user_info(
                 detail="Пользователь не найден"
             )
         
+        print(f"✅ Пользователь найден: {user.username} (ID: {user.id})")
+        
         return {
             "success": True,
             "user": {
@@ -399,13 +435,73 @@ async def get_current_user_info(
             }
         }
         
-    except HTTPException:
+    except HTTPException as e:
+        print(f"❌ Ошибка авторизации: {e.detail}")
         raise
     except Exception as e:
+        print(f"❌ Ошибка загрузки пользователя: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка загрузки пользователя: {str(e)}"
         )
+
+# ========== ТЕСТОВЫЕ ЭНДПОИНТЫ ДЛЯ ОТЛАДКИ ==========
+
+@app.get("/test")
+async def test_page():
+    """Тестовая страница для проверки работы"""
+    return HTMLResponse("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Test Page</title>
+    </head>
+    <body>
+        <h1>DevNet Messenger Test</h1>
+        <button onclick="testRegister()">Test Register</button>
+        <button onclick="testLogin()">Test Login</button>
+        <div id="result"></div>
+        <script>
+            async function testRegister() {
+                const formData = new FormData();
+                formData.append('username', 'testuser');
+                formData.append('email', 'test@test.com');
+                formData.append('password', 'test123');
+                
+                const response = await fetch('/api/register', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                document.getElementById('result').innerHTML = 
+                    `Status: ${response.status}<br>Response: ${await response.text()}`;
+            }
+            
+            async function testLogin() {
+                const formData = new FormData();
+                formData.append('username', 'admin');
+                formData.append('password', 'admin123');
+                
+                const response = await fetch('/api/login', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                document.getElementById('result').innerHTML = 
+                    `Status: ${response.status}<br>Response: ${await response.text()}`;
+            }
+        </script>
+    </body>
+    </html>
+    """)
+
+@app.options("/api/register")
+@app.options("/api/auth/register")
+@app.options("/api/login")
+@app.options("/api/auth/login")
+async def options_handler():
+    """Обработчик OPTIONS запросов для CORS"""
+    return JSONResponse(content={"status": "ok"})
 
 # ========== ОСТАЛЬНЫЕ ЭНДПОИНТЫ ==========
 
@@ -516,83 +612,6 @@ async def get_messages(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка загрузки сообщений: {str(e)}"
-        )
-
-@app.post("/api/messages")
-async def create_message(
-    content: str = Form(...),
-    message_type: str = Form("text"),
-    request: Request = None,
-    db: Session = Depends(get_db)
-):
-    """Создание нового сообщения"""
-    try:
-        # Проверяем аутентификацию
-        token = request.cookies.get("access_token") if request else None
-        if not token:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Требуется аутентификация"
-            )
-        
-        payload = verify_token(token)
-        if not payload:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Недействительный токен"
-            )
-        
-        user_id = payload.get("user_id")
-        user = db.query(User).filter(User.id == user_id).first()
-        
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Пользователь не найден"
-            )
-        
-        # Проверяем сообщение
-        if not content or len(content.strip()) == 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Сообщение не может быть пустым"
-            )
-        
-        # Создаем сообщение
-        message = Message(
-            from_user_id=user_id,
-            content=content.strip(),
-            message_type=message_type
-        )
-        
-        db.add(message)
-        db.commit()
-        db.refresh(message)
-        
-        return {
-            "success": True,
-            "message": "Сообщение отправлено",
-            "data": {
-                "id": message.id,
-                "content": message.content,
-                "type": message.message_type,
-                "sender": {
-                    "id": user.id,
-                    "username": user.username,
-                    "display_name": user.display_name,
-                    "avatar_url": user.avatar_url
-                },
-                "created_at": message.created_at.isoformat() if message.created_at else None
-            }
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка отправки сообщения: {str(e)}"
         )
 
 # ========== ФАЛЛБЭК ДЛЯ СТАТИЧЕСКИХ ФАЙЛОВ ==========
@@ -728,7 +747,7 @@ if __name__ == "__main__":
     print(f"📁 Директория загрузок: {UPLOAD_DIR}")
     print(f"📁 Директория фронтенда: {frontend_dir}")
     print(f"🔗 API документация: http://localhost:{port}/api/docs")
-    print(f"🏠 Главная страница: http://localhost:{port}/")
+    print(f"🔧 Тестовая страница: http://localhost:{port}/test")
     print(f"💬 Чат: http://localhost:{port}/chat")
     print("👑 Тестовый пользователь: admin / admin123")
     print("=" * 50)
