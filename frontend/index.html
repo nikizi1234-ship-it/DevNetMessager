@@ -882,5 +882,18 @@
         console.log("Current URL:", window.location.href);
         console.log("API endpoints should be at:", window.location.origin + "/api/register");
     });
+            // Добавить в конец скрипта
+    console.log("Current URL:", window.location.href);
+    console.log("Check API endpoints:");
+    console.log("  /api/login - POST для входа");
+    console.log("  /api/register - POST для регистрации");
+    console.log("  /api/me - GET для проверки авторизации");
+    
+    // Проверяем доступность API
+    fetch('/api/health')
+        .then(response => response.json())
+        .then(data => console.log("API health check:", data))
+        .catch(error => console.error("API not available:", error));
+        
 </script>
 </html>
