@@ -174,11 +174,16 @@ else:
 # Монтируем директорию загрузок
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
-# ========== API ENDPOINTS ==========
+# ========== HEALTH CHECK (ВАЖНО ДЛЯ RAILWAY) ==========
+
+@app.get("/health")
+async def health_check():
+    """Проверка здоровья API (для Railway)"""
+    return JSONResponse(content={"status": "ok"}, status_code=200)
 
 @app.get("/api/health")
-async def health_check():
-    """Проверка здоровья API"""
+async def api_health_check():
+    """Проверка здоровья API с подробностями"""
     return {
         "status": "healthy",
         "service": "DevNet Messenger",
@@ -402,8 +407,7 @@ async def get_current_user_info(
             detail=f"Ошибка загрузки пользователя: {str(e)}"
         )
 
-# Остальные эндпоинты (users, messages, stats) оставляем как в предыдущей версии
-# ========== ПОЛЬЗОВАТЕЛИ ==========
+# ========== ОСТАЛЬНЫЕ ЭНДПОИНТЫ ==========
 
 @app.get("/api/users")
 async def get_users(
@@ -462,8 +466,6 @@ async def get_users(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка загрузки пользователей: {str(e)}"
         )
-
-# ========== СООБЩЕНИЯ ==========
 
 @app.get("/api/messages")
 async def get_messages(
@@ -593,49 +595,52 @@ async def create_message(
             detail=f"Ошибка отправки сообщения: {str(e)}"
         )
 
-# ========== СТАТИСТИКА ==========
+# ========== ФАЛЛБЭК ДЛЯ СТАТИЧЕСКИХ ФАЙЛОВ ==========
 
-@app.get("/api/stats")
-async def get_statistics(
-    db: Session = Depends(get_db)
-):
-    """Получение статистики системы"""
-    try:
-        # Подсчет пользователей
-        total_users = db.query(func.count(User.id)).scalar()
-        online_users = db.query(func.count(User.id)).filter(User.is_online == True).scalar()
-        
-        # Подсчет сообщений
-        total_messages = db.query(func.count(Message.id)).scalar()
-        
-        # Последнее сообщение
-        last_message = db.query(Message).order_by(desc(Message.created_at)).first()
-        last_message_time = last_message.created_at if last_message else None
-        
-        return {
-            "success": True,
-            "stats": {
-                "users": {
-                    "total": total_users,
-                    "online": online_users,
-                    "offline": total_users - online_users
-                },
-                "messages": {
-                    "total": total_messages,
-                    "last_message_time": last_message_time.isoformat() if last_message_time else None
-                },
-                "system": {
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "railway": os.environ.get("RAILWAY_ENVIRONMENT") is not None
-                }
-            }
-        }
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка получения статистики: {str(e)}"
+@app.get("/{path:path}")
+async def serve_frontend(path: str):
+    """Сервим статические файлы фронтенда"""
+    # Если запрос идет к API, возвращаем 404
+    if path.startswith("api/"):
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "API endpoint not found"}
         )
+    
+    # Определяем путь к файлу
+    file_path = frontend_dir / path
+    
+    # Если запрос к корню или HTML файлу
+    if path == "" or path.endswith(".html") or "." not in path:
+        # Проверяем существование файла
+        if path == "" or path == "/":
+            index_path = frontend_dir / "index.html"
+        elif not path.endswith(".html"):
+            html_path = frontend_dir / f"{path}.html"
+            if html_path.exists():
+                file_path = html_path
+            else:
+                file_path = frontend_dir / "index.html"
+        else:
+            file_path = frontend_dir / path
+        
+        if file_path.exists():
+            return FileResponse(str(file_path))
+    
+    # Если файл существует, отдаем его
+    if file_path.exists() and file_path.is_file():
+        return FileResponse(str(file_path))
+    
+    # Если файл не найден, отдаем index.html
+    index_path = frontend_dir / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
+    
+    # Если index.html тоже нет, возвращаем 404
+    return JSONResponse(
+        status_code=404,
+        content={"detail": "File not found"}
+    )
 
 # ========== WEB SOCKET ==========
 
@@ -712,53 +717,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
             pass
         finally:
             db.close()
-
-# ========== ФАЛЛБЭК ДЛЯ СТАТИЧЕСКИХ ФАЙЛОВ ==========
-
-@app.get("/{path:path}")
-async def serve_frontend(path: str):
-    """Сервим статические файлы фронтенда"""
-    # Если запрос идет к API, возвращаем 404
-    if path.startswith("api/"):
-        return JSONResponse(
-            status_code=404,
-            content={"detail": "API endpoint not found"}
-        )
-    
-    # Определяем путь к файлу
-    file_path = frontend_dir / path
-    
-    # Если запрос к корню или HTML файлу
-    if path == "" or path.endswith(".html") or "." not in path:
-        # Проверяем существование файла
-        if path == "" or path == "/":
-            index_path = frontend_dir / "index.html"
-        elif not path.endswith(".html"):
-            html_path = frontend_dir / f"{path}.html"
-            if html_path.exists():
-                file_path = html_path
-            else:
-                file_path = frontend_dir / "index.html"
-        else:
-            file_path = frontend_dir / path
-        
-        if file_path.exists():
-            return FileResponse(str(file_path))
-    
-    # Если файл существует, отдаем его
-    if file_path.exists() and file_path.is_file():
-        return FileResponse(str(file_path))
-    
-    # Если файл не найден, отдаем index.html
-    index_path = frontend_dir / "index.html"
-    if index_path.exists():
-        return FileResponse(str(index_path))
-    
-    # Если index.html тоже нет, возвращаем 404
-    return JSONResponse(
-        status_code=404,
-        content={"detail": "File not found"}
-    )
 
 # ========== ЗАПУСК СЕРВЕРА ==========
 
