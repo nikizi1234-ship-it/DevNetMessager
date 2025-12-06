@@ -35,44 +35,120 @@ try:
 except Exception as e:
     print(f"⚠️  Warning during database init: {e}")
 
-# ========== ИМПОРТ МОДЕЛЕЙ ==========
+# ========== УПРОЩЕННЫЙ ИМПОРТ МОДЕЛЕЙ ==========
 
+# Создаем простые модели напрямую чтобы избежать ошибок импорта
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, ForeignKey, JSON
+from sqlalchemy.orm import relationship
+
+# Создаем базовые модели
+Base = None
 try:
+    from database import Base
     from models import User, Message, Group, Channel, Subscription, GroupMember
-    print("✅ Models imported successfully")
+    print("✅ Full models imported successfully")
 except ImportError as e:
-    print(f"❌ Error importing models: {e}")
-    raise
+    print(f"⚠️  Warning importing models: {e}")
+    print("⚠️  Creating simplified models...")
+    
+    # Создаем базовый класс если не импортировался
+    from sqlalchemy.ext.declarative import declarative_base
+    Base = declarative_base()
+    
+    # Простая модель User
+    class User(Base):
+        __tablename__ = "users"
+        
+        id = Column(Integer, primary_key=True, index=True)
+        username = Column(String(50), unique=True, index=True, nullable=False)
+        email = Column(String(100), unique=True, index=True, nullable=False)
+        display_name = Column(String(100))
+        avatar_url = Column(String(500))
+        password_hash = Column(String(255), nullable=False)
+        is_online = Column(Boolean, default=False)
+        is_guest = Column(Boolean, default=False)
+        is_admin = Column(Boolean, default=False)
+        created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Простая модель Message
+    class Message(Base):
+        __tablename__ = "messages"
+        
+        id = Column(Integer, primary_key=True, index=True)
+        from_user_id = Column(Integer, ForeignKey("users.id"))
+        to_user_id = Column(Integer, ForeignKey("users.id"))
+        group_id = Column(Integer, nullable=True)
+        channel_id = Column(Integer, nullable=True)
+        content = Column(Text)
+        message_type = Column(String(20), default="text")
+        media_url = Column(String(500))
+        media_size = Column(Integer)
+        filename = Column(String(255))
+        created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Простые версии других моделей
+    class Group(Base):
+        __tablename__ = "groups"
+        id = Column(Integer, primary_key=True, index=True)
+        name = Column(String(100))
+        description = Column(Text)
+        avatar_url = Column(String(500))
+        is_public = Column(Boolean, default=True)
+        owner_id = Column(Integer, ForeignKey("users.id"))
+        members_count = Column(Integer, default=0)
+        created_at = Column(DateTime, default=datetime.utcnow)
+    
+    class Channel(Base):
+        __tablename__ = "channels"
+        id = Column(Integer, primary_key=True, index=True)
+        name = Column(String(100))
+        description = Column(Text)
+        avatar_url = Column(String(500))
+        is_public = Column(Boolean, default=True)
+        owner_id = Column(Integer, ForeignKey("users.id"))
+        subscribers_count = Column(Integer, default=0)
+        created_at = Column(DateTime, default=datetime.utcnow)
+    
+    class Subscription(Base):
+        __tablename__ = "subscriptions"
+        id = Column(Integer, primary_key=True, index=True)
+        channel_id = Column(Integer, ForeignKey("channels.id"))
+        user_id = Column(Integer, ForeignKey("users.id"))
+        role = Column(String(20), default="subscriber")
+        created_at = Column(DateTime, default=datetime.utcnow)
+    
+    class GroupMember(Base):
+        __tablename__ = "group_members"
+        id = Column(Integer, primary_key=True, index=True)
+        group_id = Column(Integer, ForeignKey("groups.id"))
+        user_id = Column(Integer, ForeignKey("users.id"))
+        role = Column(String(20), default="member")
+        created_at = Column(DateTime, default=datetime.utcnow)
+    
+    print("✅ Simplified models created")
 
 # ========== WEBSOCKET MANAGER ==========
 
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[int, WebSocket] = {}
-        self.user_statuses: Dict[int, bool] = {}
     
     async def connect(self, websocket: WebSocket, user_id: int):
         await websocket.accept()
         self.active_connections[user_id] = websocket
-        self.user_statuses[user_id] = True
         print(f"✅ User {user_id} connected")
-        
-        # Уведомляем о новом статусе онлайн
-        await self.broadcast_status(user_id, True)
     
     def disconnect(self, user_id: int):
         if user_id in self.active_connections:
             del self.active_connections[user_id]
-        self.user_statuses[user_id] = False
         print(f"📴 User {user_id} disconnected")
-    
-    async def send_personal_message(self, message: Dict[str, Any], user_id: int):
-        if user_id in self.active_connections:
-            await self.active_connections[user_id].send_json(message)
     
     async def send_to_user(self, user_id: int, message: Dict[str, Any]):
         if user_id in self.active_connections:
-            await self.active_connections[user_id].send_json(message)
+            try:
+                await self.active_connections[user_id].send_json(message)
+            except:
+                self.disconnect(user_id)
     
     async def broadcast(self, message: Dict[str, Any], exclude_user_id: Optional[int] = None):
         disconnected = []
@@ -85,20 +161,6 @@ class ConnectionManager:
         
         for user_id in disconnected:
             self.disconnect(user_id)
-    
-    async def broadcast_to_group(self, group_id: int, message: Dict[str, Any], exclude_user_id: Optional[int] = None):
-        # Здесь должна быть логика отправки участникам группы
-        # Пока отправляем всем
-        await self.broadcast(message, exclude_user_id)
-    
-    async def broadcast_status(self, user_id: int, is_online: bool):
-        status_message = {
-            "type": "user_status",
-            "user_id": user_id,
-            "is_online": is_online,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        await self.broadcast(status_message, user_id)
 
 manager = ConnectionManager()
 
@@ -107,17 +169,23 @@ manager = ConnectionManager()
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 
-SECRET_KEY = "devnet_secret_key_change_in_production"
+SECRET_KEY = "devnet_secret_key_change_in_production_1234567890"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 часа
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except Exception as e:
+        print(f"❌ Password verification error: {e}")
+        return False
 
 def get_password_hash(password):
-    return pwd_context.hash(password)
+    # Обрезаем пароль если слишком длинный для bcrypt
+    password_to_hash = password[:72] if len(password) > 72 else password
+    return pwd_context.hash(password_to_hash)
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -130,12 +198,19 @@ def verify_token(token: str):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         return payload
-    except JWTError:
+    except JWTError as e:
+        print(f"❌ Token verification error: {e}")
         return None
 
 def get_current_user(request: Request, db: Session = Depends(get_db)):
     """Получаем текущего пользователя из токена"""
     token = request.cookies.get("access_token")
+    if not token:
+        # Пробуем получить из заголовков Authorization
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+    
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -150,6 +225,12 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
         )
     
     user_id = payload.get("user_id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверный токен"
+        )
+    
     user = db.query(User).filter(User.id == user_id).first()
     
     if not user:
@@ -170,14 +251,13 @@ def create_admin_user():
         if not admin:
             print("👑 Создаем администратора...")
             admin_password = "admin123"
-            if len(admin_password) > 72:
-                admin_password = admin_password[:72]
             
             admin_user = User(
                 username="admin",
                 email="admin@devnet.local",
                 display_name="Администратор",
-                password_hash=get_password_hash(admin_password)
+                password_hash=get_password_hash(admin_password),
+                is_admin=True
             )
             db.add(admin_user)
             db.commit()
@@ -186,6 +266,7 @@ def create_admin_user():
             print("✅ Администратор уже существует")
     except Exception as e:
         print(f"⚠️  Ошибка создания администратора: {e}")
+        db.rollback()
     finally:
         db.close()
 
@@ -196,7 +277,9 @@ create_admin_user()
 app = FastAPI(
     title="DevNet Messenger API",
     description="Simple messenger for developers",
-    version="1.0.0"
+    version="1.0.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc"
 )
 
 # Настройка CORS
@@ -241,6 +324,19 @@ async def api_health_check():
         "railway": os.environ.get("RAILWAY_ENVIRONMENT") is not None
     }
 
+@app.get("/api/debug")
+async def debug_info():
+    """Отладочная информация"""
+    return {
+        "database_url": "sqlite:///:memory:" if os.environ.get("RAILWAY_ENVIRONMENT") else "sqlite:///./devnet.db",
+        "railway_env": os.environ.get("RAILWAY_ENVIRONMENT"),
+        "port": os.environ.get("PORT", 8080),
+        "upload_dir": str(UPLOAD_DIR),
+        "frontend_dir": str(frontend_dir),
+        "current_time": datetime.utcnow().isoformat(),
+        "frontend_exists": frontend_dir.exists()
+    }
+
 # ========== AUTH ENDPOINTS ==========
 
 @app.post("/api/register")
@@ -253,10 +349,12 @@ async def register_user(
     db: Session = Depends(get_db)
 ):
     """Регистрация нового пользователя"""
+    print(f"🔵 Регистрация: username={username}, email={email}")
     try:
         # Проверяем уникальность username
         existing_user = db.query(User).filter(User.username == username).first()
         if existing_user:
+            print(f"❌ Имя пользователя уже занято: {username}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Имя пользователя уже занято"
@@ -265,6 +363,7 @@ async def register_user(
         # Проверяем уникальность email
         existing_email = db.query(User).filter(User.email == email).first()
         if existing_email:
+            print(f"❌ Email уже используется: {email}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email уже используется"
@@ -272,12 +371,14 @@ async def register_user(
         
         # Проверяем пароль
         if len(password) < 6:
+            print(f"❌ Пароль слишком короткий: {len(password)} символов")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Пароль должен быть не менее 6 символов"
             )
         
         if len(password) > 72:
+            print(f"❌ Пароль слишком длинный: {len(password)} символов")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Пароль не должен превышать 72 символа"
@@ -288,12 +389,15 @@ async def register_user(
             username=username,
             email=email,
             display_name=display_name or username,
-            password_hash=get_password_hash(password)
+            password_hash=get_password_hash(password),
+            is_guest=False
         )
         
         db.add(user)
         db.commit()
         db.refresh(user)
+        
+        print(f"✅ Пользователь создан: {username} (ID: {user.id})")
         
         # Создаем токен
         access_token = create_access_token(
@@ -307,7 +411,8 @@ async def register_user(
                 "id": user.id,
                 "username": user.username,
                 "display_name": user.display_name,
-                "email": user.email
+                "email": user.email,
+                "is_admin": user.is_admin
             },
             "access_token": access_token
         }
@@ -318,8 +423,9 @@ async def register_user(
             key="access_token",
             value=access_token,
             httponly=True,
-            max_age=1800,
-            samesite="lax"
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            samesite="lax",
+            secure=os.environ.get("RAILWAY_ENVIRONMENT") is not None  # HTTPS в production
         )
         
         return response
@@ -328,6 +434,7 @@ async def register_user(
         raise
     except Exception as e:
         db.rollback()
+        print(f"❌ Ошибка регистрации: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка регистрации: {str(e)}"
@@ -341,13 +448,36 @@ async def login_user(
     db: Session = Depends(get_db)
 ):
     """Вход пользователя"""
+    print(f"🔵 Попытка входа: username={username}")
     try:
+        # Ищем пользователя по username
         user = db.query(User).filter(User.username == username).first()
-        if not user or not verify_password(password, user.password_hash):
+        
+        if not user:
+            print(f"❌ Пользователь не найден: {username}")
+            # Проверяем может быть это email
+            user = db.query(User).filter(User.email == username).first()
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Пользователь не найден"
+                )
+        
+        print(f"🔵 Найден пользователь: {user.username}, проверка пароля...")
+        
+        # Проверяем пароль
+        if not verify_password(password, user.password_hash):
+            print(f"❌ Неверный пароль для пользователя: {user.username}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Неверное имя пользователя или пароль"
             )
+        
+        print(f"✅ Успешный вход: {user.username} (ID: {user.id})")
+        
+        # Обновляем время последнего входа
+        user.last_login = datetime.utcnow()
+        db.commit()
         
         # Создаем токен
         access_token = create_access_token(
@@ -362,7 +492,8 @@ async def login_user(
                 "username": user.username,
                 "display_name": user.display_name,
                 "email": user.email,
-                "avatar_url": user.avatar_url
+                "avatar_url": user.avatar_url,
+                "is_admin": user.is_admin
             },
             "access_token": access_token
         }
@@ -373,8 +504,9 @@ async def login_user(
             key="access_token",
             value=access_token,
             httponly=True,
-            max_age=1800,
-            samesite="lax"
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            samesite="lax",
+            secure=os.environ.get("RAILWAY_ENVIRONMENT") is not None
         )
         
         return response
@@ -382,6 +514,7 @@ async def login_user(
     except HTTPException:
         raise
     except Exception as e:
+        print(f"❌ Ошибка входа: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка входа: {str(e)}"
@@ -402,9 +535,21 @@ async def get_current_user_info(
             "email": user.email,
             "avatar_url": user.avatar_url,
             "is_online": user.is_online,
-            "created_at": user.created_at.isoformat() if user.created_at else None
+            "is_admin": user.is_admin,
+            "created_at": user.created_at.isoformat() if user.created_at else None,
+            "last_login": user.last_login.isoformat() if user.last_login else None
         }
     }
+
+@app.post("/api/auth/logout")
+async def logout_user():
+    """Выход пользователя"""
+    response = JSONResponse(content={
+        "success": True,
+        "message": "Выход выполнен успешно"
+    })
+    response.delete_cookie(key="access_token")
+    return response
 
 # ========== USERS ENDPOINTS ==========
 
@@ -603,7 +748,7 @@ async def get_chat_messages(
                 "from_user_id": msg.from_user_id,
                 "group_id": msg.group_id,
                 "channel_id": msg.channel_id,
-                "reactions": msg.reactions or {},
+                "reactions": {},
                 "sender": {
                     "id": sender.id if sender else None,
                     "username": sender.username if sender else None,
@@ -689,40 +834,6 @@ async def create_message(
         db.commit()
         db.refresh(message)
         
-        # Уведомляем через WebSocket
-        ws_message = {
-            "type": "message",
-            "chat_type": chat_type,
-            "chat_id": to_user_id or group_id or channel_id,
-            "message": {
-                "id": message.id,
-                "content": message.content,
-                "type": message.message_type,
-                "is_my_message": False,
-                "from_user_id": message.from_user_id,
-                "group_id": message.group_id,
-                "channel_id": message.channel_id,
-                "sender": {
-                    "id": user.id,
-                    "username": user.username,
-                    "display_name": user.display_name,
-                    "avatar_url": user.avatar_url
-                },
-                "created_at": message.created_at.isoformat() if message.created_at else None
-            },
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-        # Отправляем получателю/участникам
-        if chat_type == "private" and to_user_id:
-            await manager.send_to_user(to_user_id, ws_message)
-        elif chat_type == "group" and group_id:
-            # TODO: Отправка участникам группы
-            await manager.broadcast(ws_message, user.id)
-        elif chat_type == "channel" and channel_id:
-            # TODO: Отправка подписчикам канала
-            await manager.broadcast(ws_message, user.id)
-        
         return {
             "success": True,
             "message": "Сообщение отправлено",
@@ -743,371 +854,139 @@ async def create_message(
             detail=f"Ошибка отправки сообщения: {str(e)}"
         )
 
-# ========== CHATS ENDPOINTS ==========
+# ========== STATIC FILES AND PAGES ==========
 
-@app.get("/api/chats/all")
-async def get_all_chats(
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Получение всех чатов пользователя"""
-    try:
-        # Личные чаты (пользователи, с которыми есть переписка)
-        private_messages = db.query(Message).filter(
-            or_(Message.from_user_id == user.id, Message.to_user_id == user.id)
-        ).all()
-        
-        # Собираем уникальных пользователей из переписки
-        user_ids = set()
-        for msg in private_messages:
-            if msg.from_user_id != user.id:
-                user_ids.add(msg.from_user_id)
-            if msg.to_user_id and msg.to_user_id != user.id:
-                user_ids.add(msg.to_user_id)
-        
-        private_chats = []
-        for uid in user_ids:
-            contact = db.query(User).filter(User.id == uid).first()
-            if contact:
-                # Получаем последнее сообщение
-                last_msg = db.query(Message).filter(
-                    or_(
-                        and_(Message.from_user_id == user.id, Message.to_user_id == uid),
-                        and_(Message.from_user_id == uid, Message.to_user_id == user.id)
-                    )
-                ).order_by(desc(Message.created_at)).first()
-                
-                private_chats.append({
-                    "id": contact.id,
-                    "name": contact.display_name or contact.username,
-                    "avatar_url": contact.avatar_url,
-                    "is_online": contact.is_online,
-                    "last_message": {
-                        "content": last_msg.content if last_msg else "",
-                        "timestamp": last_msg.created_at.isoformat() if last_msg else None
-                    } if last_msg else None
-                })
-        
-        # Группы пользователя
-        user_groups = db.query(Group).join(GroupMember).filter(GroupMember.user_id == user.id).all()
-        group_chats = []
-        for group in user_groups:
-            # Получаем последнее сообщение
-            last_msg = db.query(Message).filter(Message.group_id == group.id)\
-                .order_by(desc(Message.created_at)).first()
-            
-            group_chats.append({
-                "id": group.id,
-                "name": group.name,
-                "avatar_url": group.avatar_url,
-                "members_count": group.members_count or 0,
-                "last_message": {
-                    "content": last_msg.content if last_msg else "",
-                    "timestamp": last_msg.created_at.isoformat() if last_msg else None
-                } if last_msg else None
-            })
-        
-        # Каналы пользователя
-        user_channels = db.query(Channel).join(Subscription).filter(Subscription.user_id == user.id).all()
-        channel_chats = []
-        for channel in user_channels:
-            # Получаем последнее сообщение
-            last_msg = db.query(Message).filter(Message.channel_id == channel.id)\
-                .order_by(desc(Message.created_at)).first()
-            
-            channel_chats.append({
-                "id": channel.id,
-                "name": channel.name,
-                "avatar_url": channel.avatar_url,
-                "subscribers_count": channel.subscribers_count or 0,
-                "last_message": {
-                    "content": last_msg.content if last_msg else "",
-                    "timestamp": last_msg.created_at.isoformat() if last_msg else None
-                } if last_msg else None
-            })
-        
-        return {
-            "success": True,
-            "private_chats": private_chats,
-            "group_chats": group_chats,
-            "channel_chats": channel_chats
-        }
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка загрузки чатов: {str(e)}"
-        )
-
-# ========== GROUPS ENDPOINTS ==========
-
-@app.get("/api/groups")
-async def get_groups(
-    page: int = Query(1, ge=1),
-    limit: int = Query(50, ge=1, le=100),
-    search: Optional[str] = Query(None),
-    public_only: bool = Query(False),
-    db: Session = Depends(get_db)
-):
-    """Получение списка групп"""
-    try:
-        query = db.query(Group)
-        
-        if public_only:
-            query = query.filter(Group.is_public == True)
-        
-        if search:
-            search_filter = f"%{search}%"
-            query = query.filter(
-                (Group.name.ilike(search_filter)) |
-                (Group.description.ilike(search_filter))
+# Проверяем существование фронтенда
+if frontend_dir.exists():
+    print(f"✅ Frontend found: {frontend_dir}")
+    
+    # Явные маршруты для основных страниц
+    @app.get("/")
+    async def serve_home():
+        """Главная страница"""
+        index_path = frontend_dir / "index.html"
+        if index_path.exists():
+            return FileResponse(str(index_path))
+        return HTMLResponse("""
+        <!DOCTYPE html>
+        <html>
+        <head><title>DevNet Messenger</title></head>
+        <body>
+            <h1>DevNet Messenger</h1>
+            <p>index.html not found in frontend folder</p>
+            <p><a href="/api/docs">API Documentation</a></p>
+        </body>
+        </html>
+        """)
+    
+    @app.get("/chat")
+    async def serve_chat():
+        """Страница чата"""
+        chat_path = frontend_dir / "chat.html"
+        if chat_path.exists():
+            return FileResponse(str(chat_path))
+        return HTMLResponse("""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>DevNet Chat</title>
+            <style>
+                body { font-family: Arial; padding: 50px; text-align: center; }
+                .error { background: #ffebee; padding: 20px; border-radius: 10px; margin: 20px auto; max-width: 600px; }
+            </style>
+        </head>
+        <body>
+            <h1>DevNet Chat</h1>
+            <div class="error">
+                <h2>⚠️ chat.html not found</h2>
+                <p>The chat.html file was not found in the frontend folder.</p>
+                <p><a href="/">Go to Home</a></p>
+            </div>
+        </body>
+        </html>
+        """)
+    
+    @app.get("/test")
+    async def test_page():
+        """Тестовая страница"""
+        return HTMLResponse("""
+        <!DOCTYPE html>
+        <html>
+        <head><title>Test Page</title></head>
+        <body>
+            <h1>DevNet Messenger Test</h1>
+            <div id="result"></div>
+            <script>
+                async function testAuth() {
+                    try {
+                        const response = await fetch('/api/me');
+                        const data = await response.json();
+                        document.getElementById('result').innerHTML = 
+                            `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+                    } catch (error) {
+                        document.getElementById('result').innerHTML = 
+                            `<p style="color: red;">Error: ${error}</p>`;
+                    }
+                }
+                testAuth();
+            </script>
+        </body>
+        </html>
+        """)
+    
+    # Монтируем статику
+    app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
+    
+    # Обработчик для остальных статических файлов
+    @app.get("/{path:path}")
+    async def serve_static_files(path: str):
+        """Сервит статические файлы"""
+        # Игнорируем API маршруты
+        if path.startswith("api/"):
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "API endpoint not found"}
             )
         
-        total = query.count()
-        groups = query.order_by(desc(Group.created_at)) \
-                     .offset((page - 1) * limit) \
-                     .limit(limit) \
-                     .all()
+        file_path = frontend_dir / path
         
-        groups_data = []
-        for group in groups:
-            groups_data.append({
-                "id": group.id,
-                "name": group.name,
-                "description": group.description,
-                "avatar_url": group.avatar_url,
-                "is_public": group.is_public,
-                "members_count": group.members_count or 0,
-                "created_at": group.created_at.isoformat() if group.created_at else None
-            })
+        # Если это путь к файлу, отдаем его
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(str(file_path))
         
-        return {
-            "success": True,
-            "groups": groups_data,
-            "pagination": {
-                "page": page,
-                "limit": limit,
-                "total": total,
-                "pages": (total + limit - 1) // limit
-            }
-        }
+        # Если это директория или файл не найден, возвращаем index.html
+        index_path = frontend_dir / "index.html"
+        if index_path.exists():
+            return FileResponse(str(index_path))
         
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка загрузки групп: {str(e)}"
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "File not found"}
         )
+        
+else:
+    print(f"⚠️  Frontend not found: {frontend_dir}")
+    
+    @app.get("/")
+    async def serve_index():
+        return HTMLResponse("""
+        <!DOCTYPE html>
+        <html>
+        <head><title>DevNet Messenger</title></head>
+        <body>
+            <h1>DevNet Messenger</h1>
+            <p>Frontend files not found. Please check your deployment.</p>
+            <p><a href="/api/health">API Health Check</a> | <a href="/api/docs">API Docs</a></p>
+        </body>
+        </html>
+        """)
+    
+    @app.get("/chat")
+    async def serve_chat_fallback():
+        return RedirectResponse("/")
 
-@app.post("/api/groups")
-async def create_group(
-    name: str = Form(...),
-    description: Optional[str] = Form(None),
-    is_public: bool = Form(True),
-    avatar: Optional[UploadFile] = File(None),
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Создание новой группы"""
-    try:
-        # Проверяем уникальность имени
-        existing_group = db.query(Group).filter(Group.name == name).first()
-        if existing_group:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Группа с таким названием уже существует"
-            )
-        
-        # Обрабатываем аватар
-        avatar_url = None
-        if avatar:
-            file_ext = avatar.filename.split('.')[-1]
-            filename = f"{uuid.uuid4()}.{file_ext}"
-            file_path = UPLOAD_DIR / "avatars" / filename
-            
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(avatar.file, buffer)
-            
-            avatar_url = f"/uploads/avatars/{filename}"
-        
-        # Создаем группу
-        group = Group(
-            name=name,
-            description=description,
-            is_public=is_public,
-            avatar_url=avatar_url,
-            owner_id=user.id,
-            members_count=1
-        )
-        
-        db.add(group)
-        db.commit()
-        db.refresh(group)
-        
-        # Добавляем создателя как участника
-        group_member = GroupMember(
-            group_id=group.id,
-            user_id=user.id,
-            role="owner"
-        )
-        db.add(group_member)
-        db.commit()
-        
-        return {
-            "success": True,
-            "message": "Группа создана",
-            "group": {
-                "id": group.id,
-                "name": group.name,
-                "description": group.description,
-                "avatar_url": group.avatar_url,
-                "is_public": group.is_public,
-                "members_count": group.members_count
-            }
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка создания группы: {str(e)}"
-        )
-
-# ========== CHANNELS ENDPOINTS ==========
-
-@app.get("/api/channels")
-async def get_channels(
-    page: int = Query(1, ge=1),
-    limit: int = Query(50, ge=1, le=100),
-    search: Optional[str] = Query(None),
-    public_only: bool = Query(False),
-    db: Session = Depends(get_db)
-):
-    """Получение списка каналов"""
-    try:
-        query = db.query(Channel)
-        
-        if public_only:
-            query = query.filter(Channel.is_public == True)
-        
-        if search:
-            search_filter = f"%{search}%"
-            query = query.filter(
-                (Channel.name.ilike(search_filter)) |
-                (Channel.description.ilike(search_filter))
-            )
-        
-        total = query.count()
-        channels = query.order_by(desc(Channel.created_at)) \
-                       .offset((page - 1) * limit) \
-                       .limit(limit) \
-                       .all()
-        
-        channels_data = []
-        for channel in channels:
-            channels_data.append({
-                "id": channel.id,
-                "name": channel.name,
-                "description": channel.description,
-                "avatar_url": channel.avatar_url,
-                "is_public": channel.is_public,
-                "subscribers_count": channel.subscribers_count or 0,
-                "created_at": channel.created_at.isoformat() if channel.created_at else None
-            })
-        
-        return {
-            "success": True,
-            "channels": channels_data,
-            "pagination": {
-                "page": page,
-                "limit": limit,
-                "total": total,
-                "pages": (total + limit - 1) // limit
-            }
-        }
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка загрузки каналов: {str(e)}"
-        )
-
-@app.post("/api/channels")
-async def create_channel(
-    name: str = Form(...),
-    description: Optional[str] = Form(None),
-    is_public: bool = Form(True),
-    avatar: Optional[UploadFile] = File(None),
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Создание нового канала"""
-    try:
-        # Проверяем уникальность имени
-        existing_channel = db.query(Channel).filter(Channel.name == name).first()
-        if existing_channel:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Канал с таким названием уже существует"
-            )
-        
-        # Обрабатываем аватар
-        avatar_url = None
-        if avatar:
-            file_ext = avatar.filename.split('.')[-1]
-            filename = f"{uuid.uuid4()}.{file_ext}"
-            file_path = UPLOAD_DIR / "avatars" / filename
-            
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(avatar.file, buffer)
-            
-            avatar_url = f"/uploads/avatars/{filename}"
-        
-        # Создаем канал
-        channel = Channel(
-            name=name,
-            description=description,
-            is_public=is_public,
-            avatar_url=avatar_url,
-            owner_id=user.id,
-            subscribers_count=1
-        )
-        
-        db.add(channel)
-        db.commit()
-        db.refresh(channel)
-        
-        # Добавляем создателя как подписчика
-        subscription = Subscription(
-            channel_id=channel.id,
-            user_id=user.id,
-            role="owner"
-        )
-        db.add(subscription)
-        db.commit()
-        
-        return {
-            "success": True,
-            "message": "Канал создан",
-            "channel": {
-                "id": channel.id,
-                "name": channel.name,
-                "description": channel.description,
-                "avatar_url": channel.avatar_url,
-                "is_public": channel.is_public,
-                "subscribers_count": channel.subscribers_count
-            }
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка создания канала: {str(e)}"
-        )
+# Монтируем директорию загрузок
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 # ========== WEB SOCKET ==========
 
@@ -1157,10 +1036,6 @@ async def handle_websocket_message(data: Dict[str, Any], user_id: int):
         await handle_chat_message(data, user_id)
     elif message_type == "typing":
         await handle_typing_indicator(data, user_id)
-    elif message_type == "reaction":
-        await handle_message_reaction(data, user_id)
-    elif message_type == "call":
-        await handle_call(data, user_id)
 
 async def handle_chat_message(data: Dict[str, Any], user_id: int):
     """Обработка сообщения чата"""
@@ -1228,11 +1103,8 @@ async def handle_chat_message(data: Dict[str, Any], user_id: int):
             # Отправляем получателю
             if chat_id != user_id:
                 await manager.send_to_user(chat_id, ws_message)
-        elif chat_type == "group":
-            # Отправляем всем участникам группы
-            await manager.broadcast_to_group(chat_id, ws_message, user_id)
-        elif chat_type == "channel":
-            # Отправляем всем подписчикам канала
+        elif chat_type in ["group", "channel"]:
+            # Отправляем всем кроме отправителя
             await manager.broadcast(ws_message, user_id)
             
     except Exception as e:
@@ -1263,54 +1135,6 @@ async def handle_typing_indicator(data: Dict[str, Any], user_id: int):
         # Отправляем всем в чате кроме отправителя
         await manager.broadcast(typing_message, user_id)
 
-async def handle_message_reaction(data: Dict[str, Any], user_id: int):
-    """Обработка реакции на сообщение"""
-    # TODO: Реализовать реакции
-    pass
-
-async def handle_call(data: Dict[str, Any], user_id: int):
-    """Обработка звонка"""
-    # TODO: Реализовать звонки
-    pass
-
-# ========== STATIC FILES ==========
-
-# Монтируем статические файлы в самом конце
-if frontend_dir.exists():
-    print(f"✅ Frontend found: {frontend_dir}")
-    app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
-else:
-    print(f"⚠️  Frontend not found: {frontend_dir}")
-
-# Монтируем директорию загрузок
-app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
-
-# ========== FALLBACK ROUTES ==========
-
-@app.get("/{path:path}")
-async def serve_frontend(path: str):
-    """Сервим статические файлы фронтенда"""
-    if path.startswith("api/"):
-        return JSONResponse(
-            status_code=404,
-            content={"detail": "API endpoint not found"}
-        )
-    
-    file_path = frontend_dir / path
-    
-    if file_path.exists() and file_path.is_file():
-        return FileResponse(str(file_path))
-    
-    # Если файл не найден, отдаем index.html
-    index_path = frontend_dir / "index.html"
-    if index_path.exists():
-        return FileResponse(str(index_path))
-    
-    return JSONResponse(
-        status_code=404,
-        content={"detail": "File not found"}
-    )
-
 # ========== START SERVER ==========
 
 if __name__ == "__main__":
@@ -1320,8 +1144,10 @@ if __name__ == "__main__":
     print(f"📡 Порт: {port}")
     print(f"📁 Директория загрузок: {UPLOAD_DIR}")
     print(f"📁 Директория фронтенда: {frontend_dir}")
-    print(f"🔗 API документация: http://localhost:{port}/api/docs")
+    print(f"🔗 Главная страница: http://localhost:{port}/")
     print(f"💬 Чат: http://localhost:{port}/chat")
+    print(f"🔧 Тестовая страница: http://localhost:{port}/test")
+    print(f"📖 API документация: http://localhost:{port}/api/docs")
     print("👑 Тестовый пользователь: admin / admin123")
     print("=" * 50)
     
