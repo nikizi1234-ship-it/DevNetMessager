@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 # ========== КОНСТАНТЫ И НАСТРОЙКИ ==========
 
-# Получаем настройки из окружения
+# Получаем настройки из окруженияя
 DOMAIN = os.environ.get("DOMAIN", "localhost")
 IS_PRODUCTION = os.environ.get("RAILWAY_ENVIRONMENT") is not None or os.environ.get("PRODUCTION") == "true"
 SECRET_KEY = os.environ.get("SECRET_KEY", secrets.token_urlsafe(64))
