@@ -35,7 +35,8 @@ import io
 import aiofiles
 import zipfile
 import tarfile
-import magic
+import mimetypes
+from typing import Tuple
 from concurrent.futures import ThreadPoolExecutor
 import threading
 
@@ -616,7 +617,10 @@ class FileHandler:
         "application/vnd.ms-powerpoint",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "application/rtf",
-        "text/csv"
+        "text/csv",
+        "application/json",
+        "text/html",
+        "text/xml"
     ]
     ALLOWED_ARCHIVE_TYPES = [
         "application/zip",
@@ -647,7 +651,7 @@ class FileHandler:
         """Генерация миниатюры для изображения"""
         try:
             with Image.open(image_path) as img:
-                img.thumbnail(max_size, Image.Resampling.LANCZOS)
+                img.thumbnail(max_size)
                 
                 # Конвертируем в RGB если нужно
                 if img.mode in ('RGBA', 'LA'):
@@ -679,10 +683,15 @@ class FileHandler:
     @staticmethod
     def is_allowed_file(file: UploadFile) -> Tuple[bool, str]:
         """Проверка разрешен ли файл"""
-        mime_type = file.content_type or mimetypes.guess_type(file.filename)[0]
+        # Получаем MIME тип из content_type или расширения файла
+        mime_type = file.content_type
+        
+        # Если content_type не указан, пробуем определить по расширению
+        if not mime_type or mime_type == 'application/octet-stream':
+            mime_type, _ = mimetypes.guess_type(file.filename)
         
         if not mime_type:
-            return False, "Unknown file type"
+            return False, "Не удалось определить тип файла"
         
         # Проверяем все разрешенные типы
         allowed_types = (
@@ -694,7 +703,7 @@ class FileHandler:
         )
         
         if mime_type not in allowed_types:
-            return False, f"File type {mime_type} is not allowed"
+            return False, f"Тип файла {mime_type} не поддерживается"
         
         return True, ""
 
