@@ -1220,7 +1220,7 @@ class ConnectionManager:
         self.user_devices: Dict[int, Dict[str, Any]] = {}
         self.typing_indicators: Dict[Tuple[str, int], Dict[int, datetime]] = {}
         self.call_rooms: Dict[str, Dict[str, Any]] = {}
-        self.lock = asyncio.Lock()
+        self.lock = asyncio.Lock()  # Используем asyncio.Lock вместо threading.Lock
     
     async def connect(self, websocket: WebSocket, user_id: int, device_id: Optional[str] = None):
         """Подключение пользователя к WebSocket"""
@@ -1262,7 +1262,7 @@ class ConnectionManager:
         # Отправляем информацию о текущем состоянии
         await self.send_user_state(user_id, websocket)
     
-    def disconnect(self, websocket: WebSocket):
+    async def disconnect(self, websocket: WebSocket):
         """Отключение пользователя от WebSocket"""
         connection_id = id(websocket)
         
@@ -1329,7 +1329,7 @@ class ConnectionManager:
             
             # Удаляем отключенные соединения
             for websocket in disconnected:
-                self.disconnect(websocket)
+                await self.disconnect(websocket)
     
     async def broadcast(self, message: Dict[str, Any], exclude_user_id: Optional[int] = None):
         """Широковещательная рассылка всем пользователям"""
@@ -1360,7 +1360,7 @@ class ConnectionManager:
         
         # Удаляем отключенные соединения
         for websocket in disconnected:
-            self.disconnect(websocket)
+            await self.disconnect(websocket)
     
     async def broadcast_to_chat(self, chat_type: str, chat_id: int, message: Dict[str, Any], exclude_user_id: Optional[int] = None):
         """Отправка сообщения всем участникам чата"""
@@ -1484,22 +1484,22 @@ class ConnectionManager:
         """Получение пользователей, которые печатают в чате"""
         key = (chat_type, chat_id)
         
-        with self.lock:
-            if key in self.typing_indicators:
-                # Удаляем старые записи (старше 10 секунд)
-                current_time = datetime.utcnow()
-                typing_users = []
-                
-                for user_id, typing_time in list(self.typing_indicators[key].items()):
-                    if (current_time - typing_time).total_seconds() > 10:
-                        del self.typing_indicators[key][user_id]
-                    else:
-                        typing_users.append(user_id)
-                
-                if not self.typing_indicators[key]:
-                    del self.typing_indicators[key]
-                
-                return typing_users
+        # Используем обычный with для доступа к словарю
+        if key in self.typing_indicators:
+            # Удаляем старые записи (старше 10 секунд)
+            current_time = datetime.utcnow()
+            typing_users = []
+            
+            for user_id, typing_time in list(self.typing_indicators[key].items()):
+                if (current_time - typing_time).total_seconds() > 10:
+                    del self.typing_indicators[key][user_id]
+                else:
+                    typing_users.append(user_id)
+            
+            if not self.typing_indicators[key]:
+                del self.typing_indicators[key]
+            
+            return typing_users
         
         return []
     
@@ -1567,7 +1567,7 @@ class ConnectionManager:
         return list(self.user_connections.keys())
 
 manager = ConnectionManager()
-
+        
 # ========== СОЗДАНИЕ FASTAPI ПРИЛОЖЕНИЯ ==========
 
 app = FastAPI(
