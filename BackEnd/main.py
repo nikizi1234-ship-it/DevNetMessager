@@ -142,17 +142,17 @@ class User(Base):
     received_messages = relationship("Message", foreign_keys="Message.to_user_id", back_populates="receiver")
     owned_groups = relationship("Group", foreign_keys="Group.owner_id", back_populates="owner")
     owned_channels = relationship("Channel", foreign_keys="Channel.owner_id", back_populates="owner")
-    group_memberships = relationship("GroupMember", back_populates="user", cascade="all, delete-orphan")
-    channel_subscriptions = relationship("ChannelSubscription", back_populates="user", cascade="all, delete-orphan")
-    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
-    notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
-    call_logs = relationship("CallLog", back_populates="user", cascade="all, delete-orphan")
-    files = relationship("File", back_populates="user", cascade="all, delete-orphan")
-    reactions = relationship("MessageReaction", back_populates="user", cascade="all, delete-orphan")
-    polls_voted = relationship("PollVote", back_populates="user", cascade="all, delete-orphan")
+    group_memberships = relationship("GroupMember", foreign_keys="GroupMember.user_id", back_populates="user", cascade="all, delete-orphan")
+    channel_subscriptions = relationship("ChannelSubscription", foreign_keys="ChannelSubscription.user_id", back_populates="user", cascade="all, delete-orphan")
+    refresh_tokens = relationship("RefreshToken", foreign_keys="RefreshToken.user_id", back_populates="user", cascade="all, delete-orphan")
+    notifications = relationship("Notification", foreign_keys="Notification.user_id", back_populates="user", cascade="all, delete-orphan")
+    call_logs = relationship("CallLog", foreign_keys="CallLog.caller_id", back_populates="user", cascade="all, delete-orphan")
+    files = relationship("File", foreign_keys="File.user_id", back_populates="user", cascade="all, delete-orphan")
+    reactions = relationship("MessageReaction", foreign_keys="MessageReaction.user_id", back_populates="user", cascade="all, delete-orphan")
+    polls_voted = relationship("PollVote", foreign_keys="PollVote.user_id", back_populates="user", cascade="all, delete-orphan")
     contacts = relationship("Contact", foreign_keys="Contact.user_id", back_populates="user", cascade="all, delete-orphan")
     contact_of = relationship("Contact", foreign_keys="Contact.contact_id", back_populates="contact", cascade="all, delete-orphan")
-
+    
 class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
     
@@ -316,8 +316,8 @@ class GroupMember(Base):
     notification_settings = Column(JSON, default={"all_messages": True, "mentions_only": False, "muted": False})
     
     # Связи
-    group = relationship("Group", back_populates="members")
-    user = relationship("User", back_populates="group_memberships")
+    group = relationship("Group", foreign_keys=[group_id], back_populates="members")
+    user = relationship("User", foreign_keys=[user_id], back_populates="group_memberships")
     banned_by_user = relationship("User", foreign_keys=[banned_by])
 
 class ChannelSubscription(Base):
@@ -2635,8 +2635,8 @@ async def get_user_by_id(
 @app.put("/api/users/profile")
 async def update_user_profile(
     request: UserUpdateRequest,
-    avatar: Optional[UploadFile] = File(None),
-    banner: Optional[UploadFile] = File(None),
+    avatar: Optional[UploadFile] = File(default=None),
+    banner: Optional[UploadFile] = File(default=None),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
