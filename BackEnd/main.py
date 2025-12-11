@@ -205,16 +205,16 @@ class Message(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     deleted_at = Column(DateTime)
     
-    # Связи
+    # Связи - ВАЖНО: указываем явные foreign_keys
     sender = relationship("User", foreign_keys=[from_user_id], back_populates="sent_messages")
     receiver = relationship("User", foreign_keys=[to_user_id], back_populates="received_messages")
-    group = relationship("Group", back_populates="messages")
-    channel = relationship("Channel", back_populates="messages")
+    group = relationship("Group", foreign_keys=[group_id], back_populates="messages")
+    channel = relationship("Channel", foreign_keys=[channel_id], back_populates="messages")
     reply_to = relationship("Message", remote_side=[id], backref="replies")
     forwarded_from_user = relationship("User", foreign_keys=[forwarded_from])
-    reactions = relationship("MessageReaction", back_populates="message", cascade="all, delete-orphan")
-    polls = relationship("Poll", back_populates="message", cascade="all, delete-orphan")
-    files = relationship("File", back_populates="message", cascade="all, delete-orphan")
+    reactions = relationship("MessageReaction", foreign_keys="MessageReaction.message_id", back_populates="message", cascade="all, delete-orphan")
+    polls = relationship("Poll", foreign_keys="Poll.message_id", back_populates="message", cascade="all, delete-orphan")
+    files = relationship("File", foreign_keys="File.message_id", back_populates="message", cascade="all, delete-orphan")
 
 class Group(Base):
     __tablename__ = "groups"
@@ -250,8 +250,8 @@ class Group(Base):
     
     # Связи
     owner = relationship("User", foreign_keys=[owner_id], back_populates="owned_groups")
-    members = relationship("GroupMember", back_populates="group", cascade="all, delete-orphan")
-    messages = relationship("Message", back_populates="group", cascade="all, delete-orphan")
+    members = relationship("GroupMember", foreign_keys="GroupMember.group_id", back_populates="group", cascade="all, delete-orphan")
+    messages = relationship("Message", foreign_keys="Message.group_id", back_populates="group", cascade="all, delete-orphan")
     pinned_message = relationship("Message", foreign_keys=[pinned_message_id])
 
 class Channel(Base):
@@ -286,8 +286,8 @@ class Channel(Base):
     
     # Связи
     owner = relationship("User", foreign_keys=[owner_id], back_populates="owned_channels")
-    subscribers = relationship("ChannelSubscription", back_populates="channel", cascade="all, delete-orphan")
-    messages = relationship("Message", back_populates="channel", cascade="all, delete-orphan")
+    subscribers = relationship("ChannelSubscription", foreign_keys="ChannelSubscription.channel_id", back_populates="channel", cascade="all, delete-orphan")
+    messages = relationship("Message", foreign_keys="Message.channel_id", back_populates="channel", cascade="all, delete-orphan")
     pinned_message = relationship("Message", foreign_keys=[pinned_message_id])
 
 class GroupMember(Base):
