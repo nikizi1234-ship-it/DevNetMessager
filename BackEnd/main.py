@@ -8744,7 +8744,7 @@ async def delete_notification(
 
 @app.post("/api/upload")
 async def upload_file(
-    file: UploadFile = File(...),
+    file: UploadFile = File(),
     is_public: bool = Form(False),
     expires_hours: Optional[int] = Form(None),
     user: User = Depends(get_current_user),
