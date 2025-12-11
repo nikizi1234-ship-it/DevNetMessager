@@ -20,7 +20,6 @@ import hashlib
 import secrets
 import asyncio
 import time
-import mimetypes
 from io import BytesIO
 from PIL import Image
 import logging
@@ -680,7 +679,7 @@ class FileHandler:
         
         return md5_hash.hexdigest(), sha256_hash.hexdigest()
     
-    @staticmethod
+        @staticmethod
     def is_allowed_file(file: UploadFile) -> Tuple[bool, str]:
         """Проверка разрешен ли файл"""
         # Получаем MIME тип из content_type или расширения файла
