@@ -89,7 +89,18 @@ async function login() {
                 window.location.reload();
             }, 1000);
         } else {
-            showNotification(`❌ ${data.detail}`, 'error');
+            // Исправленная обработка ошибки
+            let errorMessage = 'Ошибка входа';
+            if (data.detail) {
+                if (typeof data.detail === 'string') {
+                    errorMessage = data.detail;
+                } else if (typeof data.detail === 'object') {
+                    errorMessage = JSON.stringify(data.detail);
+                }
+            } else if (data.message) {
+                errorMessage = data.message;
+            }
+            showNotification(`❌ ${errorMessage}`, 'error');
         }
     } catch (error) {
         showNotification('❌ Ошибка подключения к серверу', 'error');
@@ -115,7 +126,18 @@ async function register() {
                 window.location.reload();
             }, 1000);
         } else {
-            showNotification(`❌ ${data.detail}`, 'error');
+            // Исправленная обработка ошибки
+            let errorMessage = 'Ошибка регистрации';
+            if (data.detail) {
+                if (typeof data.detail === 'string') {
+                    errorMessage = data.detail;
+                } else if (typeof data.detail === 'object') {
+                    errorMessage = JSON.stringify(data.detail);
+                }
+            } else if (data.message) {
+                errorMessage = data.message;
+            }
+            showNotification(`❌ ${errorMessage}`, 'error');
         }
     } catch (error) {
         showNotification('❌ Ошибка подключения к серверу', 'error');
