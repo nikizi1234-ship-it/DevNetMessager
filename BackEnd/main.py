@@ -6081,8 +6081,8 @@ async def get_channels(
 @app.post("/api/channels")
 async def create_channel(
     request: ChannelCreateRequest,
-    avatar: Optional[UploadFile] = File(None),
-    banner: Optional[UploadFile] = File(None),
+    avatar: Optional[UploadFile] = None,
+    banner: Optional[UploadFile] = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -6399,8 +6399,8 @@ async def update_channel(
     description: Optional[str] = Form(None),
     is_public: Optional[bool] = Form(None),
     is_verified: Optional[bool] = Form(None),
-    avatar: Optional[UploadFile] = File(None),
-    banner: Optional[UploadFile] = File(None),
+    avatar: Optional[UploadFile] = None,
+    banner: Optional[UploadFile] = None,
     settings: Optional[str] = Form(None),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
