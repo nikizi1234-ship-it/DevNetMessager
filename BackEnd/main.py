@@ -341,9 +341,9 @@ class ChannelSubscription(Base):
     last_message_read_id = Column(Integer, default=0)
     notification_settings = Column(JSON, default={"all_messages": True, "mentions_only": False, "muted": False})
     
-    # Связи
+    # Связи - ЯВНО указываем foreign_keys
     channel = relationship("Channel", back_populates="subscribers")
-    user = relationship("User", back_populates="channel_subscriptions")
+    user = relationship("User", foreign_keys=[user_id], back_populates="channel_subscriptions")
     banned_by_user = relationship("User", foreign_keys=[banned_by])
 
 class MessageReaction(Base):
@@ -454,7 +454,7 @@ class Contact(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # Связи
+    # Связи - ЯВНО указываем foreign_keys
     user = relationship("User", foreign_keys=[user_id], back_populates="contacts")
     contact = relationship("User", foreign_keys=[contact_id], back_populates="contact_of")
 
@@ -478,7 +478,7 @@ class CallLog(Base):
     recording_url = Column(String(500))
     created_at = Column(DateTime, default=datetime.utcnow)
     
-    # Связи
+    # Связи - ЯВНО указываем foreign_keys
     user = relationship("User", foreign_keys=[caller_id], back_populates="call_logs")
     receiver = relationship("User", foreign_keys=[receiver_id])
     group = relationship("Group")
@@ -538,7 +538,7 @@ class Report(Base):
     resolved_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
     
-    # Связи
+    # Связи - ЯВНО указываем foreign_keys
     reporter = relationship("User", foreign_keys=[reporter_id])
     reported_user = relationship("User", foreign_keys=[reported_user_id])
     reported_group = relationship("Group")
