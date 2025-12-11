@@ -3360,7 +3360,7 @@ async def create_message(
     forwarded_from: Optional[int] = Form(None),
     forwarded_message_id: Optional[int] = Form(None),
     is_encrypted: bool = Form(False),
-    media: Optional[UploadFile] = File(None),
+    media: Optional[UploadFile] = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
