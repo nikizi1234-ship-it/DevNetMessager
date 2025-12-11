@@ -4490,8 +4490,8 @@ async def get_groups(
 @app.post("/api/groups")
 async def create_group(
     request: GroupCreateRequest,
-    avatar: Optional[UploadFile] = File(None),
-    banner: Optional[UploadFile] = File(None),
+    avatar: Optional[UploadFile] = None,
+    banner: Optional[UploadFile] = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
