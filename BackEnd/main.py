@@ -2635,8 +2635,8 @@ async def get_user_by_id(
 @app.put("/api/users/profile")
 async def update_user_profile(
     request: UserUpdateRequest,
-    avatar: Optional[UploadFile] = File(default=None),
-    banner: Optional[UploadFile] = File(default=None),
+    avatar: Optional[UploadFile] = None,
+    banner: Optional[UploadFile] = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
