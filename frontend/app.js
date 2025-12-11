@@ -128,26 +128,26 @@ async function register() {
         
         const data = await response.json();
         
+        console.log('DEBUG: Registration response:', { 
+            status: response.status, 
+            statusText: response.statusText,
+            data: data,
+            dataType: typeof data,
+            detailExists: 'detail' in data,
+            detailType: data.detail ? typeof data.detail : 'undefined'
+        });
+        
         if (response.ok) {
             showNotification('✅ Регистрация успешна!', 'success');
             setTimeout(() => {
                 window.location.reload();
             }, 1000);
         } else {
-            // Исправленная обработка ошибки
-            let errorMessage = 'Ошибка регистрации';
-            if (data.detail) {
-                if (typeof data.detail === 'string') {
-                    errorMessage = data.detail;
-                } else if (typeof data.detail === 'object') {
-                    errorMessage = JSON.stringify(data.detail);
-                }
-            } else if (data.message) {
-                errorMessage = data.message;
-            }
-            showNotification(`❌ ${errorMessage}`, 'error');
+            // Просто показываем общую ошибку без вызова .toLowerCase()
+            showNotification('❌ Ошибка при регистрации', 'error');
         }
     } catch (error) {
+        console.error('DEBUG: Registration fetch error:', error);
         showNotification('❌ Ошибка подключения к серверу', 'error');
     }
 }
