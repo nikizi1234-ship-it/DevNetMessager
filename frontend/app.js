@@ -208,28 +208,37 @@ async function register(event) {
             }, 2000);
             
         } else {
-            // Обработка ошибки 422
+            // Обработка ошибки
             console.log('DEBUG: Registration failed:', data);
             
             let errorMessage = 'Ошибка регистрации';
             
-            // Извлекаем сообщение об ошибке из Pydantic response
-            if (data.detail && Array.isArray(data.detail) && data.detail.length > 0) {
-                const error = data.detail[0];
-                if (error.msg) {
-                    errorMessage = error.msg;
-                    
-                    // Добавляем локацию если есть
-                    if (error.loc && error.loc.length > 0) {
-                        const field = error.loc[error.loc.length - 1];
-                        errorMessage = `Поле "${field}": ${error.msg}`;
+            // Извлекаем сообщение об ошибке
+            if (data.detail) {
+                // Проверяем тип data.detail
+                if (typeof data.detail === 'string') {
+                    errorMessage = data.detail;
+                } else if (Array.isArray(data.detail) && data.detail.length > 0) {
+                    // Обработка Pydantic ошибок валидации
+                    const error = data.detail[0];
+                    if (error.msg) {
+                        errorMessage = error.msg;
+                        
+                        // Добавляем локацию если есть
+                        if (error.loc && error.loc.length > 0) {
+                            const field = error.loc[error.loc.length - 1];
+                            errorMessage = `Поле "${field}": ${error.msg}`;
+                        }
                     }
+                } else if (typeof data.detail === 'object') {
+                    // Если это объект, пытаемся извлечь сообщение
+                    errorMessage = 'Ошибка валидации данных';
                 }
-            } else if (typeof data.detail === 'string') {
-                errorMessage = data.detail;
+            } else if (data.message && typeof data.message === 'string') {
+                errorMessage = data.message;
             }
             
-            // Показываем ошибку НЕ через .toLowerCase()
+            // Показываем ошибку
             alert(`❌ Ошибка: ${errorMessage}`);
         }
         
