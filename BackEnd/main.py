@@ -818,7 +818,13 @@ def get_current_user(
     token = None
     
     # 1. Из cookies
-    token = request.cookies.get("access_token")
+    try:
+        # Получаем cookies из request
+        if hasattr(request, 'cookies'):
+            token = request.cookies.get("access_token")
+    except Exception as e:
+        logger.warning(f"Error getting cookies: {e}")
+        pass
     
     # 2. Из заголовка Authorization
     if not token:
