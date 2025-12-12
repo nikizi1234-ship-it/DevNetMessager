@@ -743,7 +743,14 @@
                 console.log("Registration failed:", result);
                 // Определяем какое поле содержит ошибку
                 if (result.detail) {
-                    const errorText = result.detail.toLowerCase();
+                    // Безопасная проверка типа
+                    let errorText = '';
+                    if (typeof result.detail === 'string') {
+                        errorText = result.detail.toLowerCase();
+                    } else if (typeof result.detail === 'object') {
+                        errorText = JSON.stringify(result.detail).toLowerCase();
+                    }
+                        
                     if (errorText.includes('email')) {
                         showFieldError('email', result.detail);
                     } else if (errorText.includes('парол') || errorText.includes('password')) {
@@ -751,9 +758,9 @@
                     } else if (errorText.includes('username') || errorText.includes('имя пользователя')) {
                         showFieldError('username', result.detail);
                     } else {
-                        showFieldError('username', result.detail || 'Ошибка регистрации');
+                         showFieldError('username', result.detail || 'Ошибка регистрации');
                     }
-                } else {
+                 } else {
                     showFieldError('username', 'Неизвестная ошибка сервера');
                 }
             }
