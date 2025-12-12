@@ -516,8 +516,8 @@
                     <div class="form-group">
                         <label>Имя пользователя</label>
                         <input type="text" name="username" placeholder="username" required 
-                               minlength="3" maxlength="50" pattern="[a-zA-Z0-9_.-]+"
-                               title="Только буквы, цифры, точки, дефисы и подчеркивания">
+                           minlength="3" maxlength="50" pattern="[a-zA-Z0-9._-]+"
+                           title="Только буквы, цифры, точки, дефисы и подчеркивания">
                         <div class="error-message" id="usernameError"></div>
                     </div>
                     
@@ -582,11 +582,6 @@
                         <div class="feature-icon">👥</div>
                         <h3>Группы</h3>
                         <p>Создавайте группы для общения с командой</p>
-                    </div>
-                    <div class="feature">
-                        <div class="feature-icon">🖼️</div>
-                        <h3>Файлы</h3>
-                        <p>Отправляйте изображения и документы</p>
                     </div>
                 </div>
 
@@ -662,7 +657,7 @@
         }
     }
 
-    // Обработка формы регистрации
+        // Обработка формы регистрации
     document.getElementById('registerForm').addEventListener('submit', async function(e) {
         e.preventDefault();
         console.log("Register form submitted");
@@ -693,28 +688,32 @@
         registerBtn.textContent = 'Регистрация...';
         
         try {
-            // Создаем FormData правильно
-            const formData = new URLSearchParams();
-            formData.append('username', username);
-            formData.append('email', email);
-            formData.append('password', password);
-            if (displayName) {
-                formData.append('display_name', displayName);
+            // Создаем JSON данные
+            const formData = {
+                username: username,
+                email: email,
+                password: password
+            };
+            
+            // Добавляем display_name если указан
+            if (displayName && displayName.trim()) {
+                formData.display_name = displayName.trim();
             }
             
-            console.log("Sending request to /api/register");
+            console.log("Sending JSON data to /api/register:", formData);
             
             const response = await fetch('/api/register', {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
                 },
-                body: formData
+                body: JSON.stringify(formData)
             });
             
             console.log("Response status:", response.status);
             
-            // Пробуем прочитать ответ как текст сначала
+            // Читаем ответ
             const responseText = await response.text();
             console.log("Response text:", responseText);
             
@@ -723,44 +722,77 @@
                 result = JSON.parse(responseText);
             } catch (parseError) {
                 console.error("Failed to parse JSON:", parseError);
-                throw new Error(`Server returned invalid JSON: ${responseText.substring(0, 100)}...`);
+                throw new Error(`Invalid server response: ${responseText.substring(0, 100)}...`);
             }
             
             if (response.ok && result.success) {
-                // Форматируем отображаемое имя для приветствия
+                // Успешная регистрация
                 let welcomeName = result.user.display_name || result.user.username;
-                resultDiv.innerHTML = `✅ Регистрация успешна! Добро пожаловать, ${welcomeName}!<br>Перенаправление в чат...`;
+                resultDiv.innerHTML = `✅ Регистрация успешна! Добро пожаловать, ${welcomeName}!<br>Перенаправление...`;
                 resultDiv.style.display = 'block';
                 
-                console.log("Registration successful, redirecting to chat...");
+                console.log("Registration successful, user:", result.user);
                 
-                // Автоматическая авторизация - токен уже в cookies
-                // Перенаправляем в чат через 2 секунды
+                // Перенаправляем на страницу входа через 2 секунды
                 setTimeout(() => {
-                    window.location.href = '/chat';
+                    // Показываем форму входа
+                    showAuthForm('login');
+                    // Можно очистить форму регистрации
+                    form.reset();
                 }, 2000);
+                
             } else {
                 console.log("Registration failed:", result);
-                // Определяем какое поле содержит ошибку
+                // Обработка ошибок Pydantic
                 if (result.detail) {
-                    // Безопасная проверка типа
-                    let errorText = '';
-                    if (typeof result.detail === 'string') {
-                        errorText = result.detail.toLowerCase();
-                    } else if (typeof result.detail === 'object') {
-                        errorText = JSON.stringify(result.detail).toLowerCase();
+                    let errorMessage = 'Ошибка регистрации';
+                    
+                    // Если detail это массив (Pydantic validation errors)
+                    if (Array.isArray(result.detail)) {
+                        // Берем первую ошибку
+                        const firstError = result.detail[0];
+                        if (firstError.msg) {
+                            errorMessage = firstError.msg;
+                            // Определяем поле для отображения ошибки
+                            if (firstError.loc && firstError.loc.length > 1) {
+                                const fieldName = firstError.loc[firstError.loc.length - 1];
+                                if (fieldName === 'username') {
+                                    showFieldError('username', errorMessage);
+                                } else if (fieldName === 'email') {
+                                    showFieldError('email', errorMessage);
+                                } else if (fieldName === 'password') {
+                                    showFieldError('password', errorMessage);
+                                } else {
+                                    showFieldError('username', errorMessage);
+                                }
+                            } else {
+                                showFieldError('username', errorMessage);
+                            }
+                        }
+                    } 
+                    // Если detail это строка
+                    else if (typeof result.detail === 'string') {
+                        errorMessage = result.detail;
+                        // Пытаемся определить поле по тексту ошибки
+                        const errorText = errorMessage.toLowerCase();
+                        if (errorText.includes('email')) {
+                            showFieldError('email', errorMessage);
+                        } else if (errorText.includes('парол') || errorText.includes('password')) {
+                            showFieldError('password', errorMessage);
+                        } else if (errorText.includes('username') || errorText.includes('имя пользователя')) {
+                            showFieldError('username', errorMessage);
+                        } else {
+                            showFieldError('username', errorMessage);
+                        }
                     }
-                        
-                    if (errorText.includes('email')) {
-                        showFieldError('email', result.detail);
-                    } else if (errorText.includes('парол') || errorText.includes('password')) {
-                        showFieldError('password', result.detail);
-                    } else if (errorText.includes('username') || errorText.includes('имя пользователя')) {
-                        showFieldError('username', result.detail);
-                    } else {
-                         showFieldError('username', result.detail || 'Ошибка регистрации');
+                    // Если detail это объект
+                    else if (typeof result.detail === 'object') {
+                        errorMessage = 'Ошибка валидации данных';
+                        showFieldError('username', errorMessage);
                     }
-                 } else {
+                    
+                    console.log("Error message:", errorMessage);
+                } else {
                     showFieldError('username', 'Неизвестная ошибка сервера');
                 }
             }
@@ -774,7 +806,7 @@
         }
     });
 
-        // Обработка формы входа
+            // Обработка формы входа
     document.getElementById('loginForm').addEventListener('submit', async function(e) {
         e.preventDefault();
         console.log("Login form submitted");
@@ -796,24 +828,26 @@
         loginBtn.textContent = 'Вход...';
         
         try {
-            // Создаем FormData правильно
-            const formData = new URLSearchParams();
-            formData.append('username', username);
-            formData.append('password', password);
+            // Создаем JSON данные
+            const formData = {
+                username: username,
+                password: password
+            };
             
             console.log("Sending request to /api/login");
             
             const response = await fetch('/api/login', {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
                 },
-                body: formData
+                body: JSON.stringify(formData)
             });
             
             console.log("Response status:", response.status);
             
-            // Пробуем прочитать ответ как текст сначала
+            // Читаем ответ
             const responseText = await response.text();
             console.log("Response text:", responseText);
             
@@ -822,11 +856,11 @@
                 result = JSON.parse(responseText);
             } catch (parseError) {
                 console.error("Failed to parse JSON:", parseError);
-                throw new Error(`Server returned invalid JSON: ${responseText.substring(0, 100)}...`);
+                throw new Error(`Invalid server response: ${responseText.substring(0, 100)}...`);
             }
             
             if (response.ok && result.success) {
-                // Форматируем отображаемое имя для приветствия
+                // Успешный вход
                 let welcomeName = result.user.display_name || result.user.username;
                 resultDiv.innerHTML = `✅ Вход выполнен! Добро пожаловать, ${welcomeName}!<br>Перенаправление в чат...`;
                 resultDiv.style.display = 'block';
@@ -841,7 +875,26 @@
                 }, 2000);
             } else {
                 console.log("Login failed:", result);
-                showFieldError('username', result.detail || 'Неверное имя пользователя или пароль', 'login');
+                // Обработка ошибок
+                if (result.detail) {
+                    let errorMessage = 'Неверное имя пользователя или пароль';
+                    
+                    // Если detail это строка
+                    if (typeof result.detail === 'string') {
+                        errorMessage = result.detail;
+                    }
+                    // Если detail это массив
+                    else if (Array.isArray(result.detail)) {
+                        const firstError = result.detail[0];
+                        if (firstError.msg) {
+                            errorMessage = firstError.msg;
+                        }
+                    }
+                    
+                    showFieldError('username', errorMessage, 'login');
+                } else {
+                    showFieldError('username', 'Неверное имя пользователя или пароль', 'login');
+                }
             }
         } catch (error) {
             console.error("Network error:", error);
