@@ -10,29 +10,53 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // Проверка аутентификации
+// Проверка аутентификации
 async function checkAuth() {
+    console.log('DEBUG: Skipping complex auth check, showing login form immediately');
+    
+    // Временно отключаем проверку через API для тестирования регистрации
+    // Просто показываем форму входа
+    showLoginForm();
+    return;
+    
+    /*
+    // Резервный код для восстановления полноценной проверки позже:
     try {
+        console.log('DEBUG: Starting auth check via /api/me');
         const response = await fetch('/api/me', {
+            method: 'GET',
             credentials: 'include'
         });
         
+        console.log('DEBUG: Auth check response status:', response.status, response.statusText);
+        
         if (response.ok) {
-            const userData = await response.json();
-            currentUserId = userData.id;
-            currentUsername = userData.username;
+            const data = await response.json();
+            console.log('DEBUG: Auth successful, user data:', data);
             
-            document.getElementById('current-user').textContent = userData.display_name || userData.username;
-            document.getElementById('auth-section').style.display = 'none';
-            document.getElementById('chat-section').style.display = 'block';
-            
-            initializeChat();
-        } else {
-            showLoginForm();
+            if (data.user && data.user.id) {
+                currentUserId = data.user.id;
+                currentUsername = data.user.username;
+                
+                document.getElementById('current-user').textContent = 
+                    data.user.display_name || data.user.username;
+                document.getElementById('auth-section').style.display = 'none';
+                document.getElementById('chat-section').style.display = 'block';
+                
+                initializeChat();
+                return;
+            }
         }
+        
+        // Если мы здесь, значит пользователь не авторизован
+        console.log('DEBUG: User not authenticated, showing login form');
+        showLoginForm();
+        
     } catch (error) {
-        console.error('Auth check failed:', error);
+        console.error('DEBUG: Auth check failed with error:', error);
         showLoginForm();
     }
+    */
 }
 
 // Показать форму входа
