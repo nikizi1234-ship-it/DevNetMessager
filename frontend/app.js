@@ -95,6 +95,7 @@ function setupEventListeners() {
 }
 
 // Вход в систему
+// Вход в систему
 async function login() {
     const formData = new FormData(document.getElementById('login-form'));
     
@@ -116,13 +117,13 @@ async function login() {
             // Исправленная обработка ошибки
             let errorMessage = 'Ошибка входа';
             
-            // Проверяем тип data.detail перед вызовом .toLowerCase()
+            // Безопасная обработка data.detail
             if (data.detail) {
                 if (typeof data.detail === 'string') {
                     errorMessage = data.detail;
                 } else if (typeof data.detail === 'object') {
                     // Если это объект, преобразуем в строку
-                    errorMessage = 'Ошибка валидации данных';
+                    errorMessage = JSON.stringify(data.detail);
                 }
             } else if (data.message && typeof data.message === 'string') {
                 errorMessage = data.message;
