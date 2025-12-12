@@ -141,38 +141,118 @@ async function login() {
 
 // Регистрация
 async function register() {
-    const formData = new FormData(document.getElementById('register-form'));
+    // Находим форму и кнопку отправки
+    const form = document.getElementById('register-form');
+    const submitBtn = form.querySelector('button[type="submit"]');
+    
+    // Сохраняем исходный текст кнопки и блокируем её
+    const originalBtnText = submitBtn.textContent;
+    submitBtn.textContent = 'Регистрация...';
+    submitBtn.disabled = true;
+    
+    // Получаем данные формы
+    const formData = new FormData(form);
     
     try {
+        console.log('DEBUG: Sending registration request...');
         const response = await fetch('/api/register', {
             method: 'POST',
             body: formData,
-            credentials: 'include'
+            credentials: 'include',
+            headers: {
+                'Accept': 'application/json'
+            }
         });
         
-        const data = await response.json();
+        console.log('DEBUG: Response received, status:', response.status);
         
-        console.log('DEBUG: Registration response:', { 
-            status: response.status, 
-            statusText: response.statusText,
-            data: data,
-            dataType: typeof data,
-            detailExists: 'detail' in data,
-            detailType: data.detail ? typeof data.detail : 'undefined'
-        });
+        // Пробуем прочитать ответ как JSON
+        let data;
+        try {
+            const text = await response.text();
+            console.log('DEBUG: Response text:', text);
+            
+            if (text) {
+                data = JSON.parse(text);
+            } else {
+                data = {};
+            }
+        } catch (parseError) {
+            console.error('DEBUG: Failed to parse JSON:', parseError);
+            data = { detail: 'Invalid server response' };
+        }
         
+        // Проверяем статус ответа
         if (response.ok) {
+            console.log('DEBUG: Registration successful!', data);
             showNotification('✅ Регистрация успешна!', 'success');
+            
+            // Если есть автоматический логин после регистрации
+            if (data.user) {
+                currentUserId = data.user.id;
+                currentUsername = data.user.username;
+            }
+            
+            // Перезагружаем через 1 секунду
             setTimeout(() => {
                 window.location.reload();
             }, 1000);
         } else {
-            // Просто показываем общую ошибку без вызова .toLowerCase()
-            showNotification('❌ Ошибка при регистрации', 'error');
+            // Обработка ошибок
+            console.log('DEBUG: Registration failed:', data);
+            
+            let errorMessage = 'Ошибка при регистрации';
+            
+            // Пытаемся извлечь понятное сообщение об ошибке
+            if (data.detail) {
+                if (typeof data.detail === 'string') {
+                    errorMessage = data.detail;
+                } else if (Array.isArray(data.detail)) {
+                    // Если это массив ошибок валидации
+                    errorMessage = data.detail.map(err => 
+                        `${err.loc ? err.loc.join('.') + ': ' : ''}${err.msg}`
+                    ).join(', ');
+                } else if (typeof data.detail === 'object') {
+                    // Если это объект с ошибками
+                    errorMessage = Object.entries(data.detail)
+                        .map(([field, msg]) => `${field}: ${msg}`)
+                        .join(', ');
+                }
+            } else if (data.message) {
+                errorMessage = data.message;
+            } else if (data.error) {
+                errorMessage = data.error;
+            } else if (response.status === 400) {
+                errorMessage = 'Некорректные данные';
+            } else if (response.status === 409) {
+                errorMessage = 'Пользователь с таким именем или email уже существует';
+            } else if (response.status === 500) {
+                errorMessage = 'Внутренняя ошибка сервера';
+            }
+            
+            // Показываем ошибку
+            showNotification(`❌ ${errorMessage}`, 'error');
+            
+            // Выделяем поле с ошибкой если есть информация о нем
+            if (data.detail && typeof data.detail === 'object') {
+                for (const field in data.detail) {
+                    const input = form.querySelector(`[name="${field}"]`);
+                    if (input) {
+                        input.style.borderColor = '#ff6b6b';
+                        setTimeout(() => {
+                            input.style.borderColor = '';
+                        }, 3000);
+                    }
+                }
+            }
         }
     } catch (error) {
         console.error('DEBUG: Registration fetch error:', error);
-        showNotification('❌ Ошибка подключения к серверу', 'error');
+        showNotification('❌ Ошибка подключения к серверу. Проверьте интернет и попробуйте снова.', 'error');
+    } finally {
+        // Восстанавливаем кнопку в любом случае
+        submitBtn.textContent = originalBtnText;
+        submitBtn.disabled = false;
     }
 }
 
