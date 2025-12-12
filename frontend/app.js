@@ -115,23 +115,19 @@ async function login() {
         } else {
             // Исправленная обработка ошибки
             let errorMessage = 'Ошибка входа';
+            
+            // Проверяем тип data.detail перед вызовом .toLowerCase()
             if (data.detail) {
                 if (typeof data.detail === 'string') {
                     errorMessage = data.detail;
                 } else if (typeof data.detail === 'object') {
-                    errorMessage = JSON.stringify(data.detail);
+                    // Если это объект, преобразуем в строку
+                    errorMessage = 'Ошибка валидации данных';
                 }
-            } else if (data.message) {
-                errorMessage = data.message;
-            }
-            let errorMessage = 'Ошибка регистрации';
-            if (data.detail && typeof data.detail === 'string') {
-                errorMessage = data.detail;
             } else if (data.message && typeof data.message === 'string') {
                 errorMessage = data.message;
-            } else if (data.detail && typeof data.detail === 'object') {
-                errorMessage = 'Ошибка валидации данных';
             }
+            
             showNotification(`❌ ${errorMessage}`, 'error');
         }
     } catch (error) {
