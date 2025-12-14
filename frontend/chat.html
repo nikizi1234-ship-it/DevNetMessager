@@ -1149,20 +1149,8 @@
                             this.reconnectAttempts++;
                             const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 10000);
                             
-                            NotificationManager.showNotification(
-                                'Переподключение', 
-                                `Попытка ${this.reconnectAttempts}/${this.maxReconnectAttempts} через ${delay/1000}с`, 
-                                'warning', 
-                                3000
-                            );
-                            
+                            console.log(`🔄 Повторное подключение через ${delay/1000} секунд...`);
                             setTimeout(() => this.setupWebSocket(), delay);
-                        } else {
-                            NotificationManager.showNotification(
-                                'Соединение потеряно', 
-                                'Пожалуйста, обновите страницу', 
-                                'error'
-                            );
                         }
                     };
                     
@@ -1566,12 +1554,16 @@
                 if (!content || !this.selectedChat || !this.ws) {
                     if (!content) {
                         NotificationManager.showNotification('Ошибка', 'Сообщение не может быть пустым', 'warning', 3000);
+                    } else if (!this.ws) {
+                        NotificationManager.showNotification('Ошибка', 'Нет подключения к серверу', 'error', 3000);
+                        this.setupWebSocket(); // Попытка переподключиться
                     }
                     return;
                 }
                 
                 if (this.ws.readyState !== WebSocket.OPEN) {
-                    this.showError('Ошибка подключения', 'Нет соединения с сервером');
+                    this.showError('Ошибка подключения', 'Нет соединения с сервером. Переподключение...');
+                    this.setupWebSocket(); // Переподключение
                     return;
                 }
                 
@@ -1585,14 +1577,9 @@
                 };
                 
                 try {
-                    // Отправляем через WebSocket
                     this.ws.send(JSON.stringify(messageData));
-                    
-                    // Очищаем поле ввода
                     input.value = '';
                     this.autoResizeTextarea(input);
-                    
-                    // Сбрасываем индикатор набора
                     this.sendTypingIndicator(false);
                     
                 } catch (error) {
