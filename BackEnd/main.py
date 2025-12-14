@@ -2505,16 +2505,18 @@ async def get_users(
                 "created_at": user_item.created_at.isoformat() if user_item.created_at else None
             })
         
-        return {
-            "success": True,
-            "users": users_data,
-            "pagination": {
-                "page": page,
-                "limit": limit,
-                "total": total,
-                "pages": (total + limit - 1) // limit
-            }
+         return {
+        "success": True,
+        "private_chats": private_chats,  # Изменено с "chats" на "private_chats"
+        "group_chats": group_chats,      # Добавлено
+        "channel_chats": channel_chats,  # Добавлено
+        "count": len(all_chats),
+        "stats": {
+            "private": len(private_chats),
+            "groups": len(group_chats),
+            "channels": len(channel_chats)
         }
+    }
         
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки пользователей: {str(e)}")
